@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Local secrets and environment
+.env
+.env.*
+!.env.example
+
+# User-uploaded files
+uploads/
+
+# Logs and runtime output
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.claude/settings.local.json
+
+# Local test files
+sample-upload-test.*
+
+# Private agent context and local publication checkout
+AGENTS.md
+AGENTS.local.md
+.agents/
+.codex/
+.public-release/
+app.url
+*.sqlite*
+*.jsonl
+auth.json
+config.toml

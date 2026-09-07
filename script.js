@@ -1,0 +1,670 @@
+const chatLog = document.getElementById('chatLog');
+const chatForm = document.getElementById('chatForm');
+const messageInput = document.getElementById('messageInput');
+const sendBtn = document.getElementById('sendBtn');
+const clearBtn = document.getElementById('clearBtn');
+const counter = document.getElementById('counter');
+const statusText = document.getElementById('statusText');
+const toast = document.getElementById('toast');
+const chatList = document.getElementById('chatList');
+const newChatBtn = document.getElementById('newChatBtn');
+const activeChatTitle = document.getElementById('activeChatTitle');
+const usageSummary = document.getElementById('usageSummary');
+const statusConsole = document.getElementById('statusConsole');
+const clearConsoleBtn = document.getElementById('clearConsoleBtn');
+const fileInput = document.getElementById('fileInput');
+const attachBtn = document.getElementById('attachBtn');
+const voiceBtn = document.getElementById('voiceBtn');
+const attachmentTray = document.getElementById('attachmentTray');
+
+const CHATS_STORAGE_KEY = 'persian-claude-chats-v1';
+const LEGACY_MESSAGES_KEY = 'persian-claude-chat-messages';
+const MAX_ATTACHMENTS_PER_MESSAGE = 5;
+const persianDigits = new Intl.NumberFormat('fa-IR');
+
+let chatStore = loadChatStore();
+let activeChatId = chatStore.activeChatId;
+let sendingChatIds = new Set();
+let pendingAttachments = [];
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function makeId(prefix) {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function formatNumber(value) {
+  return persianDigits.format(Number(value || 0));
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (value < 1024) return `${formatNumber(value)} بایت`;
+  if (value < 1024 * 1024) return `${formatNumber(Math.round(value / 1024))} کیلوبایت`;
+  return `${formatNumber((value / 1024 / 1024).toFixed(1))} مگابایت`;
+}
+
+function formatTime(iso) {
+  if (!iso) return '';
+  return new Intl.DateTimeFormat('fa-IR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(iso));
+}
+
+function createEmptyUsage() {
+  return {
+    request_count: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0,
+    total_input_tokens: 0,
+    total_output_tokens: 0,
+    last_usage: null,
+  };
+}
+
+function createChat(title = 'گفتگوی تازه') {
+  const createdAt = nowIso();
+  return {
+    id: makeId('chat'),
+    title,
+    createdAt,
+    updatedAt: createdAt,
+    messages: [],
+    usageSummary: createEmptyUsage(),
+    statusLog: [{ at: createdAt, type: 'info', text: 'گفتگوی تازه ساخته شد.' }],
+  };
+}
+
+function normalizeChat(chat) {
+  return {
+    id: chat.id || makeId('chat'),
+    title: chat.title || 'گفتگوی تازه',
+    createdAt: chat.createdAt || nowIso(),
+    updatedAt: chat.updatedAt || chat.createdAt || nowIso(),
+    messages: Array.isArray(chat.messages) ? chat.messages : [],
+    usageSummary: { ...createEmptyUsage(), ...(chat.usageSummary || {}) },
+    statusLog: Array.isArray(chat.statusLog) ? chat.statusLog : [],
+  };
+}
+
+function loadChatStore() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(CHATS_STORAGE_KEY));
+    if (raw && Array.isArray(raw.chats) && raw.chats.length) {
+      const chats = raw.chats.map(normalizeChat);
+      const active = chats.some((chat) => chat.id === raw.activeChatId) ? raw.activeChatId : chats[0].id;
+      return { version: 1, activeChatId: active, chats };
+    }
+  } catch {
+    // Fall back to legacy migration or a new chat.
+  }
+
+  try {
+    const legacyMessages = JSON.parse(localStorage.getItem(LEGACY_MESSAGES_KEY));
+    if (Array.isArray(legacyMessages) && legacyMessages.length) {
+      const legacyChat = createChat('گفتگوی قبلی');
+      legacyChat.messages = legacyMessages.map((message) => ({
+        id: makeId('msg'),
+        role: message.role,
+        content: message.content || '',
+        attachmentIds: [],
+        attachments: [],
+        createdAt: nowIso(),
+      })).filter((message) => message.role === 'user' || message.role === 'assistant');
+      legacyChat.updatedAt = nowIso();
+      legacyChat.statusLog.push({ at: nowIso(), type: 'info', text: 'گفتگوی قبلی از نسخه قدیمی منتقل شد.' });
+      return { version: 1, activeChatId: legacyChat.id, chats: [legacyChat] };
+    }
+  } catch {
+    // Ignore invalid legacy data.
+  }
+
+  const chat = createChat();
+  return { version: 1, activeChatId: chat.id, chats: [chat] };
+}
+
+function saveChatStore() {
+  localStorage.setItem(CHATS_STORAGE_KEY, JSON.stringify({ ...chatStore, activeChatId }));
+  localStorage.setItem('persian-chat-active-session', activeChatId);
+}
+
+function getChatById(chatId) {
+  return chatStore.chats.find((chat) => chat.id === chatId) || codexChats.find(chat => chat.id === chatId);
+}
+
+function getActiveChat() {
+  let chat = getChatById(activeChatId);
+  if (!chat) {
+    chat = chatStore.chats[0] || createChat();
+    if (!chatStore.chats.length) chatStore.chats.push(chat);
+    activeChatId = chat.id;
+    chatStore.activeChatId = chat.id;
+    saveChatStore();
+  }
+  return chat;
+}
+
+function showToast(message) {
+  toast.textContent = message;
+  toast.classList.add('show');
+  window.clearTimeout(showToast.timer);
+  showToast.timer = window.setTimeout(() => toast.classList.remove('show'), 2600);
+}
+
+function setStatus(message) {
+  statusText.textContent = message;
+}
+
+function updateCounter() {
+  counter.textContent = `${formatNumber(messageInput.value.length)} حرف`;
+}
+
+function addStatusLog(chatId, type, text) {
+  const chat = getChatById(chatId);
+  if (!chat) return;
+  chat.statusLog.push({ at: nowIso(), type, text });
+  chat.statusLog = chat.statusLog.slice(-80);
+  chat.updatedAt = nowIso();
+  saveChatStore();
+  if (chatId === activeChatId) renderConsole();
+  renderChatList();
+}
+
+function updateTitleFromFirstMessage(chat) {
+  if (!chat || chat.title !== 'گفتگوی تازه') return;
+  const firstUser = chat.messages.find((message) => message.role === 'user' && message.content);
+  if (!firstUser) return;
+  chat.title = firstUser.content.replace(/\s+/g, ' ').slice(0, 42) || 'گفتگوی تازه';
+}
+
+function applyUsage(chat, usage) {
+  if (!usage) return;
+  chat.usageSummary = { ...createEmptyUsage(), ...(chat.usageSummary || {}) };
+  const input = usage.input_tokens || 0;
+  const output = usage.output_tokens || 0;
+  const cacheCreate = usage.cache_creation_input_tokens || 0;
+  const cacheRead = usage.input_tokens_details?.cached_tokens ?? usage.cache_read_input_tokens ?? 0;
+
+  chat.usageSummary.input_tokens += input;
+  chat.usageSummary.output_tokens += output;
+  chat.usageSummary.cache_creation_input_tokens += cacheCreate;
+  chat.usageSummary.cache_read_input_tokens += cacheRead;
+  chat.usageSummary.total_input_tokens += input + (usage.input_tokens_details ? 0 : cacheCreate + cacheRead);
+  chat.usageSummary.total_output_tokens += output;
+  chat.usageSummary.request_count += 1;
+  chat.usageSummary.last_usage = usage;
+}
+
+function createAttachmentChip(attachment, removable = false) {
+  const chip = document.createElement('span');
+  chip.className = `attachment-chip ${attachment.mode || ''}`;
+  chip.dir = 'auto';
+  chip.textContent = `${attachment.originalName || attachment.safeName || 'فایل'} · ${formatBytes(attachment.sizeBytes)}`;
+
+  if (removable) {
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = '×';
+    remove.title = 'حذف ضمیمه';
+    remove.addEventListener('click', () => {
+      pendingAttachments = pendingAttachments.filter((item) => item.id !== attachment.id);
+      renderAttachments();
+    });
+    chip.append(remove);
+  }
+
+  return chip;
+}
+
+function createMessageElement(message, options = {}) {
+  const wrapper = document.createElement('article');
+  wrapper.className = `message ${message.role}`;
+  if (options.pending) wrapper.classList.add('pending');
+
+  const label = document.createElement('div');
+  label.className = 'message-label';
+  label.textContent = message.role === 'user' ? 'شما' : getActiveChat().source === 'codex' ? 'Codex' : 'OpenAI';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'message-bubble';
+  bubble.dir = 'auto';
+  bubble.textContent = message.content || (message.attachmentIds?.length ? 'فایل ضمیمه شد.' : '');
+
+  wrapper.append(label);
+
+  if (message.attachments?.length) {
+    const row = document.createElement('div');
+    row.className = 'message-attachments';
+    message.attachments.forEach((attachment) => row.append(createAttachmentChip(attachment)));
+    wrapper.append(row);
+  }
+
+  if (message.voiceId) {
+    voiceStorage('readonly', store => store.get(message.voiceId)).then(clip => {
+      if (clip && Date.now() - clip.createdAt < 86400000 && wrapper.isConnected) wrapper.append(createVoicePlayer(clip));
+    }).catch(() => {});
+  }
+  wrapper.append(bubble);
+  return wrapper;
+}
+
+function renderMessages() {
+  const chat = getActiveChat();
+  releaseVoicePlayers(chatLog);
+  chatLog.innerHTML = '';
+  activeChatTitle.textContent = chat.title;
+  document.getElementById('projectPath').textContent = chat.source === 'codex' ? chat.cwd : 'گفتگوی عادی';
+
+  if (!chat.messages.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.innerHTML = `
+      <strong>گفتگوی تازه آماده است</strong>
+      <span>پیامت را بنویس یا یک عکس/PDF/فایل متنی ضمیمه کن تا OpenAI تحلیل کند.</span>
+    `;
+    chatLog.append(empty);
+  } else {
+    const fragment = document.createDocumentFragment();
+    for (const message of chat.messages) fragment.append(createMessageElement(message));
+    if (sendingChatIds.has(chat.id)) {
+      fragment.append(createMessageElement({ role: 'assistant', content: chat.source === 'codex' ? 'Codex در حال کار روی پروژه…' : 'OpenAI در حال پاسخ است…' }, { pending: true }));
+    }
+    chatLog.append(fragment);
+  }
+
+  chatLog.scrollTop = chatLog.scrollHeight;
+  setStatus(sendingChatIds.has(chat.id) ? 'OpenAI در حال پاسخ است…' : `${formatNumber(chat.messages.length)} پیام`);
+}
+
+function getLastPreview(chat) {
+  const last = [...chat.messages].reverse().find((message) => message.content || message.attachments?.length);
+  if (!last) return 'هنوز پیامی ندارد';
+  return last.content ? last.content.replace(/\s+/g, ' ').slice(0, 70) : 'فایل ضمیمه شده است';
+}
+
+function renderChatList() {
+  chatList.innerHTML = '';
+  renderCodexList(chatList);
+  const sorted = [...chatStore.chats].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+
+  for (const chat of sorted) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = `chat-list-item ${chat.id === activeChatId ? 'active' : ''}`;
+    item.addEventListener('click', () => switchChat(chat.id));
+
+    const title = document.createElement('strong');
+    title.className = 'chat-title';
+    title.textContent = chat.title;
+
+    const preview = document.createElement('span');
+    preview.className = 'chat-preview';
+    preview.textContent = sendingChatIds.has(chat.id) ? 'در حال پاسخ…' : getLastPreview(chat);
+
+    const meta = document.createElement('span');
+    meta.className = 'chat-meta';
+    meta.textContent = formatTime(chat.updatedAt);
+
+    const deleteBtn = document.createElement('span');
+    deleteBtn.className = 'chat-delete';
+    deleteBtn.textContent = 'حذف';
+    deleteBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      deleteChat(chat.id);
+    });
+
+    item.append(title, preview, meta, deleteBtn);
+    chatList.append(item);
+  }
+}
+
+function renderConsole() {
+  const chat = getActiveChat();
+  const usage = { ...createEmptyUsage(), ...(chat.usageSummary || {}) };
+  const last = usage.last_usage || {};
+
+  usageSummary.innerHTML = '';
+  const pills = [
+    ['درخواست‌ها', usage.request_count],
+    ['ورودی کل', usage.total_input_tokens],
+    ['خروجی کل', usage.total_output_tokens],
+    ['آخرین ورودی', last.input_tokens || 0],
+    ['آخرین خروجی', last.output_tokens || 0],
+    ['کش خوانده‌شده', usage.cache_read_input_tokens],
+  ];
+
+  for (const [label, value] of pills) {
+    const pill = document.createElement('div');
+    pill.className = 'usage-pill';
+    pill.innerHTML = `<span>${label}</span><strong>${formatNumber(value)}</strong>`;
+    usageSummary.append(pill);
+  }
+
+  statusConsole.innerHTML = '';
+  if (!chat.statusLog.length) {
+    const empty = document.createElement('div');
+    empty.className = 'status-line muted';
+    empty.textContent = 'هنوز فعالیتی ثبت نشده است.';
+    statusConsole.append(empty);
+    return;
+  }
+
+  for (const item of chat.statusLog.slice(-50).reverse()) {
+    const line = document.createElement('div');
+    line.className = `status-line ${item.type}`;
+    const time = document.createElement('time');
+    time.textContent = formatTime(item.at);
+    const text = document.createElement('span');
+    text.textContent = item.text;
+    line.append(time, text);
+    statusConsole.append(line);
+  }
+}
+
+function renderAttachments() {
+  attachmentTray.innerHTML = '';
+  if (!pendingAttachments.length) return;
+  pendingAttachments.forEach((attachment) => attachmentTray.append(createAttachmentChip(attachment, true)));
+}
+
+function syncComposerState() {
+  const activeIsSending = sendingChatIds.has(activeChatId);
+  sendBtn.disabled = activeIsSending || Boolean(voiceSession) || Boolean(getActiveChat().archiving || getActiveChat().deleting);
+  messageInput.disabled = activeIsSending || Boolean(getActiveChat().archiving || getActiveChat().deleting);
+  sendBtn.textContent = activeIsSending ? 'در حال ارسال…' : 'ارسال';
+  const codex = getActiveChat().source === 'codex';
+  clearBtn.disabled = codex;
+  clearBtn.hidden = codex;
+  const archiveBtn = document.getElementById('archiveChatBtn');
+  archiveBtn.hidden = !codex;
+  archiveBtn.disabled = activeIsSending || Boolean(voiceSession) || Boolean(getActiveChat().archiving || getActiveChat().deleting);
+  archiveBtn.textContent = getActiveChat().archived ? 'خارج کردن از آرشیو' : 'آرشیو گفتگو';
+  document.getElementById('stopCodexBtn').hidden = !codex || !activeIsSending;
+}
+
+function renderApp() {
+  syncComposerState();
+  renderChatList();
+  renderMessages();
+  renderConsole();
+  renderAttachments();
+  renderVoiceDraft();
+  renderCodexRequests();
+  updateCounter();
+}
+
+function switchChat(chatId) {
+  if (voiceSession) { showToast('اول ضبط ویس را متوقف کن.'); return; }
+  activeChatId = chatId;
+  chatStore.activeChatId = chatId;
+  pendingAttachments = [];
+  saveChatStore();
+  renderApp();
+  messageInput.focus();
+  if (getActiveChat().source === 'codex') refreshCodexThread(chatId);
+}
+
+function deleteChat(chatId) {
+  if (voiceSession) { showToast('اول ضبط ویس را متوقف کن.'); return; }
+  const chat = chatStore.chats.find(c => c.id === chatId);
+  if (!chat) return;
+  if (sendingChatIds.has(chatId)) { showToast('اول صبر کن ارسال پیام تمام شود.'); return; }
+  if (!window.confirm(`گفتگوی «${chat.title}» و تمام پیام‌هایش برای همیشه حذف شود؟ این کار قابل بازگشت نیست.`)) return;
+  discardChatVoice(chatId);
+  if (chatStore.chats.length === 1) {
+    const replacement = createChat();
+    chatStore.chats = [replacement];
+    activeChatId = replacement.id;
+  } else {
+    chatStore.chats = chatStore.chats.filter((chat) => chat.id !== chatId);
+    if (activeChatId === chatId) activeChatId = chatStore.chats[0].id;
+  }
+  chatStore.activeChatId = activeChatId;
+  saveChatStore();
+  renderApp();
+  showToast('گفتگو حذف شد.');
+}
+
+function addNewChat() {
+  if (voiceSession) { showToast('اول ضبط ویس را متوقف کن.'); return; }
+  const chat = createChat();
+  chatStore.chats.unshift(chat);
+  activeChatId = chat.id;
+  chatStore.activeChatId = chat.id;
+  pendingAttachments = [];
+  saveChatStore();
+  renderApp();
+  messageInput.focus();
+}
+
+function setActiveSendingState(chatId, isSending) {
+  if (isSending) sendingChatIds.add(chatId);
+  else sendingChatIds.delete(chatId);
+
+  if (chatId === activeChatId) {
+    sendBtn.disabled = isSending || Boolean(voiceSession);
+    sendBtn.textContent = isSending ? 'در حال ارسال…' : 'ارسال';
+    messageInput.disabled = isSending;
+  }
+
+  renderChatList();
+  renderMessages();
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',').pop());
+    reader.onerror = () => reject(new Error('خواندن فایل ناموفق بود.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function uploadFiles(files) {
+  const list = Array.from(files || []);
+  if (!list.length) return;
+  if (pendingAttachments.length + list.length > MAX_ATTACHMENTS_PER_MESSAGE) {
+    showToast(`حداکثر ${formatNumber(MAX_ATTACHMENTS_PER_MESSAGE)} فایل در هر پیام مجاز است.`);
+    return;
+  }
+
+  for (const file of list) {
+    try {
+      setStatus('در حال آپلود فایل…');
+      const base64 = await fileToBase64(file);
+      const response = await fetch('/api/attachments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: file.name, type: file.type, size: file.size, data: base64 }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'آپلود فایل ناموفق بود.');
+      pendingAttachments.push(data.attachment);
+      addStatusLog(activeChatId, 'info', `فایل «${data.attachment.originalName}» آماده شد (${formatBytes(data.attachment.sizeBytes)}).`);
+    } catch (error) {
+      addStatusLog(activeChatId, 'error', `خطای فایل: ${error.message}`);
+      showToast(error.message);
+    }
+  }
+
+  renderAttachments();
+  setStatus('Ready');
+}
+
+async function estimateTokens(chatId) {
+  const chat = getChatById(chatId);
+  if (!chat) return;
+  try {
+    const response = await fetch('/api/count-tokens', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: chat.messages }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (response.ok && data.inputTokens !== undefined) {
+      addStatusLog(chatId, 'usage', `برآورد ورودی این درخواست: ${formatNumber(data.inputTokens)} توکن.`);
+    }
+  } catch {
+    // Token estimate is helpful but not required for sending.
+  }
+}
+
+async function sendMessage() {
+  if (getActiveChat().source === 'codex') return sendCodexMessage();
+  if (voiceSession) { showToast('اول ضبط ویس را متوقف کن.'); return; }
+  const voice = voiceDrafts.get(activeChatId);
+  if (voice && (!voice.transcript || voice.error)) {
+    showToast('متن ویس کامل نیست؛ ویس را حذف و دوباره ضبط کن.');
+    return;
+  }
+  const typedText = messageInput.value.trim();
+  const text = [typedText, voice?.transcript].filter(Boolean).join('\n\n');
+  if ((!text && !pendingAttachments.length) || sendingChatIds.has(activeChatId)) {
+    if (!text && !pendingAttachments.length) showToast('اول یک پیام بنویس یا فایل ضمیمه کن.');
+    return;
+  }
+
+  const chatId = activeChatId;
+  const chat = getChatById(chatId);
+  const attachments = [...pendingAttachments];
+  pendingAttachments = [];
+
+  const userMessage = {
+    id: makeId('msg'),
+    role: 'user',
+    voiceId: voice?.id,
+    content: text || 'لطفاً فایل ضمیمه‌شده را تحلیل کن.',
+    attachmentIds: attachments.map((attachment) => attachment.id),
+    attachments,
+    createdAt: nowIso(),
+  };
+
+  if (voice) voiceDrafts.delete(chatId);
+  chat.messages.push(userMessage);
+  updateTitleFromFirstMessage(chat);
+  chat.updatedAt = nowIso();
+  saveChatStore();
+
+  messageInput.value = '';
+  renderApp();
+  addStatusLog(chatId, 'info', 'پیام کاربر ثبت شد.');
+  if (attachments.length) addStatusLog(chatId, 'info', `${formatNumber(attachments.length)} فایل به پیام اضافه شد.`);
+  setActiveSendingState(chatId, true);
+  addStatusLog(chatId, 'sending', 'درخواست به OpenAI ارسال شد.');
+
+  if (chat.messages.length > 40) {
+    addStatusLog(chatId, 'info', 'برای کنترل حجم، فقط ۴۰ پیام آخر به OpenAI ارسال می‌شود.');
+  }
+  estimateTokens(chatId);
+
+  try {
+    const response = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatId, messages: chat.messages }),
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'درخواست ناموفق بود.');
+
+    const targetChat = getChatById(chatId);
+    if (!targetChat) return;
+
+    const assistantMessage = {
+      id: makeId('msg'),
+      role: 'assistant',
+      content: data.reply || 'پاسخی دریافت نشد.',
+      usage: data.usage || null,
+      model: data.model || null,
+      stopReason: data.stopReason || null,
+      requestMs: data.requestMs || null,
+      createdAt: nowIso(),
+    };
+
+    if (voice) {
+      voice.sent = true;
+      await voiceStorage('readwrite', store => store.put(voice)).catch(() => {});
+    }
+    targetChat.messages.push(assistantMessage);
+    applyUsage(targetChat, data.usage);
+    targetChat.updatedAt = nowIso();
+    saveChatStore();
+
+    addStatusLog(chatId, 'success', `پاسخ دریافت شد (${data.model || 'OpenAI'}، ${formatNumber(Math.round((data.requestMs || 0) / 1000))} ثانیه).`);
+    if (data.usage) {
+      addStatusLog(
+        chatId,
+        'usage',
+        `مصرف آخرین پاسخ: ورودی ${formatNumber(data.usage.input_tokens || 0)}، خروجی ${formatNumber(data.usage.output_tokens || 0)}، کش ${formatNumber((data.usage.cache_read_input_tokens || 0) + (data.usage.cache_creation_input_tokens || 0))}.`,
+      );
+    }
+
+    if (chatId !== activeChatId) showToast(`پاسخ «${targetChat.title}» آماده شد.`);
+  } catch (error) {
+    const targetChat = getChatById(chatId);
+    if (targetChat) {
+      targetChat.messages = targetChat.messages.filter((message) => message.id !== userMessage.id);
+      targetChat.updatedAt = nowIso();
+      saveChatStore();
+    }
+    if (voice && targetChat) voiceDrafts.set(chatId, voice);
+    if (chatId === activeChatId) {
+      messageInput.value = typedText;
+      pendingAttachments = attachments;
+    }
+    addStatusLog(chatId, 'error', error.message || 'ارسال پیام ناموفق بود.');
+    showToast(error.message || 'ارسال پیام ناموفق بود.');
+  } finally {
+    setActiveSendingState(chatId, false);
+    renderApp();
+    messageInput.focus();
+  }
+}
+
+chatForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  sendMessage();
+});
+
+newChatBtn.addEventListener('click', addNewChat);
+attachBtn.addEventListener('click', () => fileInput.click());
+voiceBtn.addEventListener('click', toggleVoiceInput);
+fileInput.addEventListener('change', () => {
+  uploadFiles(fileInput.files);
+  fileInput.value = '';
+});
+
+messageInput.addEventListener('input', updateCounter);
+messageInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+    event.preventDefault();
+    if (!event.repeat) sendMessage();
+  }
+});
+
+clearBtn.addEventListener('click', () => {
+  if (voiceSession) { showToast('اول ضبط ویس را متوقف کن.'); return; }
+  const chat = getActiveChat();
+  if (chat.source === 'codex' || sendingChatIds.has(chat.id)) return;
+  if (!window.confirm(`تمام پیام‌های گفتگوی «${chat.title}» پاک شوند؟ این کار قابل بازگشت نیست.`)) return;
+  discardChatVoice(chat.id);
+  chat.messages = [];
+  chat.usageSummary = createEmptyUsage();
+  chat.updatedAt = nowIso();
+  addStatusLog(chat.id, 'info', 'پیام‌های این گفتگو پاک شد.');
+  saveChatStore();
+  renderApp();
+});
+
+clearConsoleBtn.addEventListener('click', () => {
+  const chat = getActiveChat();
+  chat.statusLog = [];
+  chat.updatedAt = nowIso();
+  saveChatStore();
+  renderConsole();
+});
+
+setupVoiceInput();
+renderApp();
+setupCodexSessions();

@@ -1,0 +1,26 @@
+{
+  "name": "persian-openai-chat",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local Persian RTL chat UI for OpenAI-compatible providers and Codex project sessions",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/codeup70/ai-ui.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test codex.test.js voice.test.cjs",
+    "test:codex": "node codex-smoke.js",
+    "test:browser": "node --experimental-websocket codex-browser-smoke.js"
+  },
+  "dependencies": {
+    "dotenv": "latest",
+    "express": "latest",
+    "read-excel-file": "^9.2.0",
+    "smol-toml": "^1.8.0"
+  }
+}

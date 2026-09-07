@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>گفتگوی فارسی با OpenAI</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <aside class="sidebar" aria-label="گفتگوهای قبلی">
+      <div class="brand-block">
+        <div>
+          <p class="eyebrow">Persian OpenAI</p>
+          <h1>چت‌ها</h1>
+        </div>
+        <button id="newChatBtn" type="button">+ گفتگوی تازه</button>
+        <div class="session-controls">
+          <button id="refreshSessionsBtn" class="ghost" type="button">تازه‌سازی سشن‌ها</button>
+          <label><input id="archivedSessions" type="checkbox" /> آرشیوشده‌ها</label>
+        </div>
+        <span id="sessionsStatus" class="chat-meta" role="status">در حال اتصال به Codex…</span>
+      </div>
+      <div id="chatList" class="chat-list"></div>
+    </aside>
+
+    <section class="chat-card" aria-label="گفتگو با OpenAI">
+      <header class="chat-toolbar">
+        <div>
+          <p class="eyebrow">OpenAI Chat</p>
+          <h2 id="activeChatTitle">گفتگوی تازه</h2>
+          <p id="projectPath">فارسی، فایل، عکس و چند گفتگوی جداگانه</p>
+        </div>
+        <div class="chat-toolbar-actions">
+          <button id="archiveChatBtn" class="ghost" type="button" hidden>آرشیو گفتگو</button>
+          <button id="clearBtn" class="ghost" type="button">پاک کردن پیام‌های این گفتگو</button>
+        </div>
+      </header>
+
+      <div id="chatLog" class="chat-log" aria-live="polite"></div>
+
+      <form id="chatForm" class="composer">
+        <div id="codexRequests" class="codex-requests"></div>
+        <div id="voiceTray" class="voice-tray" aria-live="polite"></div>
+        <div id="attachmentTray" class="attachment-tray"></div>
+        <label class="sr-only" for="messageInput">پیام شما</label>
+        <textarea
+          id="messageInput"
+          dir="auto"
+          spellcheck="true"
+          placeholder="پیام… (Enter: ارسال، Shift+Enter: خط بعد)"
+          rows="1"
+          autofocus
+        ></textarea>
+        <div class="composer-footer">
+          <div class="composer-tools">
+            <input id="fileInput" class="sr-only" type="file" multiple accept="image/png,image/jpeg,image/webp,application/pdf,text/plain,.txt,.md,.json,.csv,.js,.ts,.html,.css,.py,.xlsx,.xls" />
+            <button id="attachBtn" class="icon-button" type="button">ضمیمه فایل</button>
+            <button id="voiceBtn" class="icon-button" type="button">ضبط ویس</button>
+            <span id="voiceTimer" class="voice-timer" dir="ltr" role="timer" aria-label="مدت ضبط ویس" hidden>00:00</span>
+            <span id="counter">۰ حرف</span>
+          </div>
+          <button id="sendBtn" type="submit">ارسال</button>
+          <button id="stopCodexBtn" class="ghost" type="button" hidden>توقف کار</button>
+        </div>
+      </form>
+    </section>
+
+    <aside class="console-card" aria-label="وضعیت و مصرف توکن">
+      <div class="console-header">
+        <div>
+          <p class="eyebrow">Live Console</p>
+          <h2>وضعیت و مصرف</h2>
+        </div>
+        <button id="clearConsoleBtn" class="ghost" type="button">پاک کردن گزارش</button>
+      </div>
+      <div id="statusText" class="status-card">آماده گفتگو</div>
+      <div id="usageSummary" class="usage-summary"></div>
+      <div id="statusConsole" class="status-console" aria-live="polite"></div>
+    </aside>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="voice.js"></script>
+  <script src="codex-ui.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
