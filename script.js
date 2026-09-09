@@ -736,6 +736,21 @@ clearConsoleBtn.addEventListener('click', () => {
 });
 
 const consoleDialog = document.getElementById('consoleDialog');
+const appShell = document.getElementById('appShell');
+const toggleSidebarBtn = document.getElementById('toggleSidebarBtn');
+function setSidebarCollapsed(collapsed) {
+  appShell.classList.toggle('sidebar-collapsed', collapsed);
+  toggleSidebarBtn.setAttribute('aria-expanded', String(!collapsed));
+  const label = collapsed ? 'باز کردن لیست چت‌ها' : 'جمع کردن لیست چت‌ها';
+  toggleSidebarBtn.setAttribute('aria-label', label);
+  toggleSidebarBtn.title = label;
+}
+toggleSidebarBtn.addEventListener('click', () => {
+  const collapsed = toggleSidebarBtn.getAttribute('aria-expanded') !== 'false';
+  setSidebarCollapsed(collapsed);
+  try { localStorage.setItem('persian-chat-sidebar-collapsed', String(collapsed)); } catch {}
+});
+try { setSidebarCollapsed(localStorage.getItem('persian-chat-sidebar-collapsed') === 'true'); } catch {}
 document.getElementById('showConsoleBtn').addEventListener('click', () => {
   renderConsole();
   consoleDialog.showModal();

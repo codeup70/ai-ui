@@ -7,14 +7,15 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <main class="app-shell">
+  <main id="appShell" class="app-shell">
     <aside class="sidebar" aria-label="گفتگوهای قبلی">
       <div class="brand-block">
-        <div>
+        <button id="toggleSidebarBtn" class="ghost sidebar-toggle" type="button" aria-controls="chatList" aria-expanded="true" title="جمع کردن لیست چت‌ها" aria-label="جمع کردن لیست چت‌ها">☰</button>
+        <div class="sidebar-brand">
           <p class="eyebrow">Persian OpenAI</p>
           <h1>چت‌ها</h1>
         </div>
-        <button id="newChatBtn" type="button">+ گفتگوی تازه</button>
+        <button id="newChatBtn" type="button" aria-label="گفتگوی تازه" title="گفتگوی تازه"><span aria-hidden="true">+</span><span class="new-chat-label"> گفتگوی تازه</span></button>
         <div class="session-controls">
           <button id="refreshSessionsBtn" class="ghost" type="button">تازه‌سازی سشن‌ها</button>
           <label><input id="archivedSessions" type="checkbox" /> آرشیوشده‌ها</label>
