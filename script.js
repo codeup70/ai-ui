@@ -217,6 +217,76 @@ function createAttachmentChip(attachment, removable = false) {
   return chip;
 }
 
+function renderMessageContent(container, text) {
+  // Render fences with DOM text nodes: model/user content is never interpreted as HTML.
+  const lines = text.split('\n');
+  let prose = [], code = null, fence = '', language = '';
+  const flushProse = () => {
+    if (!prose.length) return;
+    const paragraph = document.createElement('div');
+    paragraph.className = 'message-prose';
+    paragraph.textContent = prose.join('\n');
+    container.append(paragraph);
+    prose = [];
+  };
+  const flushCode = () => {
+    const source = code.join('\n');
+    const block = document.createElement('section');
+    block.className = 'code-block';
+    const header = document.createElement('div');
+    header.className = 'code-header';
+    const label = document.createElement('span');
+    label.textContent = language || 'code';
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'code-copy';
+    copy.textContent = 'کپی';
+    copy.setAttribute('aria-label', 'کپی کد');
+    const pre = document.createElement('pre');
+    pre.tabIndex = 0;
+    const content = document.createElement('code');
+    content.textContent = source;
+    pre.append(content);
+    copy.addEventListener('click', async () => {
+      try {
+        if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+        await navigator.clipboard.writeText(source);
+        copy.textContent = 'کپی شد ✓';
+        showToast('کد کپی شد.');
+        setTimeout(() => { copy.textContent = 'کپی'; }, 2000);
+      } catch {
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(content);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        showToast('کپی خودکار ممکن نشد؛ کد انتخاب شد، Ctrl+C بزن.');
+      }
+    });
+    header.append(label, copy);
+    block.append(header, pre);
+    container.append(block);
+    code = null;
+  };
+  for (const line of lines) {
+    if (code === null) {
+      const opening = line.match(/^ {0,3}(`{3,}|~{3,})([^\r]*)\r?$/);
+      if (opening) {
+        flushProse();
+        fence = opening[1];
+        language = opening[2].trim().split(/\s+/)[0];
+        code = [];
+      } else prose.push(line);
+    } else {
+      const closing = line.match(/^ {0,3}(`{3,}|~{3,})\s*$/);
+      if (closing && closing[1][0] === fence[0] && closing[1].length >= fence.length) flushCode();
+      else code.push(line);
+    }
+  }
+  if (code !== null) flushCode(); // Streaming replies may not have their closing fence yet.
+  flushProse();
+}
+
 function createMessageElement(message, options = {}) {
   const wrapper = document.createElement('article');
   wrapper.className = `message ${message.role}`;
@@ -229,7 +299,7 @@ function createMessageElement(message, options = {}) {
   const bubble = document.createElement('div');
   bubble.className = 'message-bubble';
   bubble.dir = 'auto';
-  bubble.textContent = message.content || (message.attachmentIds?.length ? 'فایل ضمیمه شد.' : '');
+  renderMessageContent(bubble, message.content || (message.attachmentIds?.length ? 'فایل ضمیمه شد.' : ''));
 
   wrapper.append(label);
 
