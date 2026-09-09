@@ -101,7 +101,7 @@ button.ghost:hover { background: rgba(255, 255, 255, 0.11); border-color: var(--
   margin: 0 auto;
   padding: 18px 0;
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr) 330px;
+  grid-template-columns: 300px minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   gap: 16px;
   position: relative;
@@ -375,6 +375,10 @@ textarea:disabled { opacity: 0.65; }
 }
 
 .console-card { grid-template-rows: auto auto auto minmax(0, 1fr); }
+#consoleDialog { display: none; position: fixed; inset: 0; margin: auto; width: min(620px, calc(100% - 24px)); height: min(720px, calc(100dvh - 32px)); max-height: calc(100dvh - 32px); color: var(--text); background: var(--bg-2); }
+#consoleDialog[open] { display: grid; }
+#consoleDialog::backdrop { background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(3px); }
+#consoleDialog .status-console { max-height: none; }
 .console-header { align-items: flex-start; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
 .status-card {
   border: 1px solid rgba(6, 182, 212, 0.22);
@@ -462,7 +466,7 @@ textarea:disabled { opacity: 0.65; }
 @media (max-width: 1180px) {
   .app-shell {
     grid-template-columns: 270px minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) minmax(0, 180px);
+    grid-template-rows: minmax(0, 1fr);
   }
   .console-card { grid-column: 1 / -1; overflow-y: auto; }
   .status-console { max-height: 240px; }
@@ -472,7 +476,7 @@ textarea:disabled { opacity: 0.65; }
   .app-shell {
     width: min(100% - 16px, 1500px);
     grid-template-columns: 1fr;
-    grid-template-rows: auto auto auto;
+    grid-template-rows: auto auto;
     height: auto;
     padding: 8px 0;
   }

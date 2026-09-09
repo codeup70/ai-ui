@@ -32,6 +32,7 @@
           <p id="projectPath">فارسی، فایل، عکس و چند گفتگوی جداگانه</p>
         </div>
         <div class="chat-toolbar-actions">
+          <button id="showConsoleBtn" class="ghost" type="button" aria-haspopup="dialog" aria-controls="consoleDialog">وضعیت و مصرف</button>
           <button id="archiveChatBtn" class="ghost" type="button" hidden>آرشیو گفتگو</button>
           <button id="clearBtn" class="ghost" type="button">پاک کردن پیام‌های این گفتگو</button>
         </div>
@@ -66,18 +67,21 @@
       </form>
     </section>
 
-    <aside class="console-card" aria-label="وضعیت و مصرف توکن">
+    <dialog id="consoleDialog" class="console-card" aria-labelledby="consoleTitle">
       <div class="console-header">
         <div>
           <p class="eyebrow">Live Console</p>
-          <h2>وضعیت و مصرف</h2>
+          <h2 id="consoleTitle">وضعیت و مصرف</h2>
         </div>
-        <button id="clearConsoleBtn" class="ghost" type="button">پاک کردن گزارش</button>
+        <div class="chat-toolbar-actions">
+          <button id="clearConsoleBtn" class="ghost" type="button">پاک کردن گزارش</button>
+          <button id="closeConsoleBtn" class="ghost" type="button" autofocus>بستن</button>
+        </div>
       </div>
       <div id="statusText" class="status-card">آماده گفتگو</div>
       <div id="usageSummary" class="usage-summary"></div>
       <div id="statusConsole" class="status-console" aria-live="polite"></div>
-    </aside>
+    </dialog>
   </main>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>

@@ -735,6 +735,17 @@ clearConsoleBtn.addEventListener('click', () => {
   renderConsole();
 });
 
+const consoleDialog = document.getElementById('consoleDialog');
+document.getElementById('showConsoleBtn').addEventListener('click', () => {
+  renderConsole();
+  consoleDialog.showModal();
+});
+document.getElementById('closeConsoleBtn').addEventListener('click', () => consoleDialog.close());
+consoleDialog.addEventListener('click', event => {
+  if (event.target !== consoleDialog) return;
+  const bounds = consoleDialog.getBoundingClientRect();
+  if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) consoleDialog.close();
+});
 setupVoiceInput();
 renderApp();
 setupCodexSessions();
