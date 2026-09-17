@@ -159,7 +159,10 @@ async function refreshCodexThread(chatId) {
     chat.updatedAt = data.updatedAt;
     chat.requests = data.requests;
     chat.statusLog = data.activity.map(item => ({ at: data.updatedAt, type: item.status === 'failed' ? 'error' : 'info', text: `${item.text || ''}\n${item.output || ''}`.trim() }));
-    if (data.error) chat.statusLog.push({ at: nowIso(), type: 'error', text: data.error });
+    if (data.error) {
+      chat.statusLog.push({ at: nowIso(), type: 'error', text: data.error });
+      if (sendingChatIds.has(chatId)) pausedQueues.add(chatId);
+    }
     if (data.usage?.total) {
       chat.usageSummary.total_input_tokens = data.usage.total.inputTokens || 0;
       chat.usageSummary.total_output_tokens = data.usage.total.outputTokens || 0;
@@ -182,7 +185,7 @@ async function refreshCodexThread(chatId) {
     renderChatList();
   } catch (error) {
     if (chatId === activeChatId) setStatus(error.message);
-  } finally { codexThreadRefreshes.delete(chatId); }
+  } finally { codexThreadRefreshes.delete(chatId); drainMessageQueue(chatId); }
 }
 
 function renderCodexRequests() {
@@ -235,24 +238,25 @@ function renderCodexRequests() {
     panel.append(box);
   }
 }
-async function sendCodexMessage() {
-  if (voiceSession || sendingChatIds.has(activeChatId)) return;
-  const chat = getActiveChat();
+async function sendCodexMessage(job) {
+  if ((!job && voiceSession) || sendingChatIds.has(job?.chatId || activeChatId)) return;
+  const chat = job ? getChatById(job.chatId) : getActiveChat();
   if (chat.archiving || chat.deleting) return;
-  const voice = voiceDrafts.get(chat.id);
+  const voice = job ? job.voice : voiceDrafts.get(chat.id);
   if (voice && (!voice.transcript || voice.error)) { showToast('متن ویس کامل نیست؛ دوباره ضبط کن.'); return; }
-  const typed = messageInput.value.trim();
+  const typed = job ? job.typedText : messageInput.value.trim();
+  const attachments = job ? job.attachments : [...pendingAttachments];
   const text = [typed, voice?.transcript].filter(Boolean).join('\n\n');
-  if (!text && !pendingAttachments.length) return;
+  if (!text && !attachments.length) return;
   chat.submitting = true;
   sendingChatIds.add(chat.id);
   syncComposerState();
   try {
-    await codexApi(`/threads/${encodeURIComponent(chat.threadId)}/turns`, { text, attachmentIds: pendingAttachments.map(a => a.id) });
+    await codexApi(`/threads/${encodeURIComponent(chat.threadId)}/turns`, { text, attachmentIds: attachments.map(a => a.id) });
     if (chat.archived) { chat.archived = false; codexListVersion++; refreshCodexSessions(); }
-    if (activeChatId === chat.id) { messageInput.value = ''; pendingAttachments = []; }
+    if (!job && activeChatId === chat.id) { messageInput.value = ''; pendingAttachments = []; }
     if (voice) {
-      voiceDrafts.delete(chat.id);
+      if (!job) voiceDrafts.delete(chat.id);
       voice.sent = true;
       voice.threadId = chat.threadId;
       voice.prompt = text;
@@ -263,6 +267,7 @@ async function sendCodexMessage() {
     await refreshCodexThread(chat.id);
   } catch (error) {
     sendingChatIds.delete(chat.id);
+    if (job) requeueMessage(job);
     showToast(error.message);
   } finally {
     chat.submitting = false;
@@ -278,6 +283,8 @@ function setupCodexSessions() {
   document.getElementById('archivedSessions').onchange = () => { codexListVersion++; refreshCodexSessions(); };
   document.getElementById('stopCodexBtn').onclick = async () => {
     const chat = getActiveChat();
+    pausedQueues.add(chat.id);
+    renderMessageQueue();
     try { await codexApi(`/threads/${encodeURIComponent(chat.threadId)}/interrupt`, {}); await refreshCodexThread(chat.id); }
     catch (error) { showToast(error.message); }
   };

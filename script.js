@@ -25,6 +25,61 @@ const persianDigits = new Intl.NumberFormat('fa-IR');
 let chatStore = loadChatStore();
 let activeChatId = chatStore.activeChatId;
 let sendingChatIds = new Set();
+const openAIControllers = new Map();
+const messageQueues = new Map();
+const pausedQueues = new Set();
+function renderMessageQueue() {
+  const panel = document.getElementById('messageQueue');
+  panel.replaceChildren();
+  const queue = messageQueues.get(activeChatId) || [];
+  if (!queue.length) return;
+  if (pausedQueues.has(activeChatId)) {
+    const resume = document.createElement('button');
+    resume.type = 'button'; resume.textContent = 'ادامهٔ صف';
+    resume.onclick = () => { pausedQueues.delete(activeChatId); drainMessageQueue(activeChatId); };
+    panel.append(resume);
+  }
+  queue.forEach((job, index) => {
+    const row = document.createElement('div');
+    const label = document.createElement('span');
+    label.textContent = `${index + 1}. ${job.typedText || job.voice?.transcript || 'فایل ضمیمه'}${job.failed ? ' — ارسال ناموفق؛ صف متوقف است' : ' — در صف'}`;
+    const cancel = document.createElement('button');
+    cancel.type = 'button'; cancel.textContent = 'لغو';
+    cancel.onclick = () => { queue.splice(queue.indexOf(job), 1); renderMessageQueue(); };
+    row.append(label, cancel); panel.append(row);
+  });
+}
+function drainMessageQueue(chatId) {
+  if (sendingChatIds.has(chatId) || pausedQueues.has(chatId)) return;
+  const chat = getChatById(chatId);
+  if (!chat || chat.submitting || chat.archiving || chat.deleting) return;
+  const job = messageQueues.get(chatId)?.shift();
+  if (!job) return;
+  renderMessageQueue();
+  if (chat.source === 'codex') sendCodexMessage(job);
+  else sendMessage(job);
+}
+function requeueMessage(job) {
+  job.failed = true;
+  const queue = messageQueues.get(job.chatId) || [];
+  queue.unshift(job); messageQueues.set(job.chatId, queue);
+  pausedQueues.add(job.chatId); renderMessageQueue();
+}
+function submitComposerMessage() {
+  if (voiceSession) return;
+  const chat = getActiveChat();
+  if (chat.archiving || chat.deleting) return;
+  const voice = voiceDrafts.get(chat.id);
+  if (voice && (!voice.transcript || voice.error)) { showToast('متن ویس کامل نیست.'); return; }
+  const typedText = messageInput.value.trim();
+  if (!typedText && !voice && !pendingAttachments.length) return;
+  const job = { chatId: chat.id, typedText, voice, attachments: [...pendingAttachments] };
+  const queue = messageQueues.get(chat.id) || [];
+  queue.push(job); messageQueues.set(chat.id, queue);
+  messageInput.value = ''; pendingAttachments = []; voiceDrafts.delete(chat.id);
+  renderAttachments(); renderVoiceDraft(); updateCounter(); renderMessageQueue();
+  drainMessageQueue(chat.id);
+}
 let pendingAttachments = [];
 function nowIso() {
   return new Date().toISOString();
@@ -440,9 +495,10 @@ function renderAttachments() {
 
 function syncComposerState() {
   const activeIsSending = sendingChatIds.has(activeChatId);
-  sendBtn.disabled = activeIsSending || Boolean(voiceSession) || Boolean(getActiveChat().archiving || getActiveChat().deleting);
-  messageInput.disabled = activeIsSending || Boolean(getActiveChat().archiving || getActiveChat().deleting);
-  sendBtn.textContent = activeIsSending ? 'در حال ارسال…' : 'ارسال';
+  sendBtn.disabled = Boolean(voiceSession) || Boolean(getActiveChat().archiving || getActiveChat().deleting);
+  messageInput.disabled = Boolean(getActiveChat().archiving || getActiveChat().deleting);
+  sendBtn.textContent = activeIsSending ? 'افزودن به صف' : 'ارسال';
+  renderMessageQueue();
   const codex = getActiveChat().source === 'codex';
   clearBtn.disabled = codex;
   clearBtn.hidden = codex;
@@ -451,6 +507,7 @@ function syncComposerState() {
   archiveBtn.disabled = activeIsSending || Boolean(voiceSession) || Boolean(getActiveChat().archiving || getActiveChat().deleting);
   archiveBtn.textContent = getActiveChat().archived ? 'خارج کردن از آرشیو' : 'آرشیو گفتگو';
   document.getElementById('stopCodexBtn').hidden = !codex || !activeIsSending;
+  document.getElementById('stopOpenAIBtn').hidden = codex || !activeIsSending;
 }
 
 function renderApp() {
@@ -513,9 +570,7 @@ function setActiveSendingState(chatId, isSending) {
   else sendingChatIds.delete(chatId);
 
   if (chatId === activeChatId) {
-    sendBtn.disabled = isSending || Boolean(voiceSession);
-    sendBtn.textContent = isSending ? 'در حال ارسال…' : 'ارسال';
-    messageInput.disabled = isSending;
+    syncComposerState();
   }
 
   renderChatList();
@@ -580,25 +635,25 @@ async function estimateTokens(chatId) {
   }
 }
 
-async function sendMessage() {
-  if (getActiveChat().source === 'codex') return sendCodexMessage();
-  if (voiceSession) { showToast('اول ضبط ویس را متوقف کن.'); return; }
-  const voice = voiceDrafts.get(activeChatId);
+async function sendMessage(job) {
+  if (!job && getActiveChat().source === 'codex') return sendCodexMessage();
+  if (!job && voiceSession) { showToast('اول ضبط ویس را متوقف کن.'); return; }
+  const voice = job ? job.voice : voiceDrafts.get(activeChatId);
   if (voice && (!voice.transcript || voice.error)) {
     showToast('متن ویس کامل نیست؛ ویس را حذف و دوباره ضبط کن.');
     return;
   }
-  const typedText = messageInput.value.trim();
+  const typedText = job ? job.typedText : messageInput.value.trim();
   const text = [typedText, voice?.transcript].filter(Boolean).join('\n\n');
-  if ((!text && !pendingAttachments.length) || sendingChatIds.has(activeChatId)) {
+  if ((!text && !(job?.attachments || pendingAttachments).length) || sendingChatIds.has(job?.chatId || activeChatId)) {
     if (!text && !pendingAttachments.length) showToast('اول یک پیام بنویس یا فایل ضمیمه کن.');
     return;
   }
 
-  const chatId = activeChatId;
+  const chatId = job?.chatId || activeChatId;
   const chat = getChatById(chatId);
-  const attachments = [...pendingAttachments];
-  pendingAttachments = [];
+  const attachments = job ? job.attachments : [...pendingAttachments];
+  if (!job) pendingAttachments = [];
 
   const userMessage = {
     id: makeId('msg'),
@@ -610,17 +665,19 @@ async function sendMessage() {
     createdAt: nowIso(),
   };
 
-  if (voice) voiceDrafts.delete(chatId);
+  if (voice && !job) voiceDrafts.delete(chatId);
   chat.messages.push(userMessage);
   updateTitleFromFirstMessage(chat);
   chat.updatedAt = nowIso();
   saveChatStore();
 
-  messageInput.value = '';
+  if (!job) messageInput.value = '';
   renderApp();
   addStatusLog(chatId, 'info', 'پیام کاربر ثبت شد.');
   if (attachments.length) addStatusLog(chatId, 'info', `${formatNumber(attachments.length)} فایل به پیام اضافه شد.`);
   setActiveSendingState(chatId, true);
+  const controller = new AbortController();
+  openAIControllers.set(chatId, controller);
   addStatusLog(chatId, 'sending', 'درخواست به OpenAI ارسال شد.');
 
   if (chat.messages.length > 40) {
@@ -633,6 +690,7 @@ async function sendMessage() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chatId, messages: chat.messages }),
+      signal: controller.signal,
     });
 
     const data = await response.json().catch(() => ({}));
@@ -678,15 +736,18 @@ async function sendMessage() {
       targetChat.updatedAt = nowIso();
       saveChatStore();
     }
-    if (voice && targetChat) voiceDrafts.set(chatId, voice);
-    if (chatId === activeChatId) {
+    if (job && targetChat) requeueMessage(job);
+    if (!job && voice && targetChat) voiceDrafts.set(chatId, voice);
+    if (!job && chatId === activeChatId) {
       messageInput.value = typedText;
       pendingAttachments = attachments;
     }
-    addStatusLog(chatId, 'error', error.message || 'ارسال پیام ناموفق بود.');
-    showToast(error.message || 'ارسال پیام ناموفق بود.');
+    if (error.name === 'AbortError') addStatusLog(chatId, 'info', 'ارسال پاسخ متوقف شد.');
+    else { addStatusLog(chatId, 'error', error.message || 'ارسال پیام ناموفق بود.'); showToast(error.message || 'ارسال پیام ناموفق بود.'); }
   } finally {
+    openAIControllers.delete(chatId);
     setActiveSendingState(chatId, false);
+    drainMessageQueue(chatId);
     renderApp();
     messageInput.focus();
   }
@@ -694,10 +755,11 @@ async function sendMessage() {
 
 chatForm.addEventListener('submit', (event) => {
   event.preventDefault();
-  sendMessage();
+  submitComposerMessage();
 });
 
 newChatBtn.addEventListener('click', addNewChat);
+document.getElementById('stopOpenAIBtn').addEventListener('click', () => openAIControllers.get(activeChatId)?.abort());
 attachBtn.addEventListener('click', () => fileInput.click());
 voiceBtn.addEventListener('click', toggleVoiceInput);
 fileInput.addEventListener('change', () => {
@@ -709,7 +771,7 @@ messageInput.addEventListener('input', updateCounter);
 messageInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
     event.preventDefault();
-    if (!event.repeat) sendMessage();
+    if (!event.repeat) submitComposerMessage();
   }
 });
 

@@ -42,6 +42,7 @@
       <div id="chatLog" class="chat-log" aria-live="polite"></div>
 
       <form id="chatForm" class="composer">
+        <div id="messageQueue" class="message-queue" aria-live="polite"></div>
         <div id="codexRequests" class="codex-requests"></div>
         <div id="voiceTray" class="voice-tray" aria-live="polite"></div>
         <div id="attachmentTray" class="attachment-tray"></div>
@@ -63,6 +64,7 @@
             <span id="counter">۰ حرف</span>
           </div>
           <button id="sendBtn" type="submit">ارسال</button>
+          <button id="stopOpenAIBtn" class="ghost" type="button" hidden>توقف پاسخ</button>
           <button id="stopCodexBtn" class="ghost" type="button" hidden>توقف کار</button>
         </div>
       </form>

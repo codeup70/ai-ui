@@ -42,7 +42,7 @@ function harness() {
       });
     }
   }
-  const ctx = vm.createContext({ indexedDB, Blob, URL, Intl, console, performance, setTimeout, clearTimeout,
+  const ctx = vm.createContext({ indexedDB, Blob, URL, Intl, console, performance, AbortController, setTimeout, clearTimeout,
     window: { SpeechRecognition: Recognition, MediaRecorder: Recorder, setTimeout, clearTimeout },
     MediaRecorder: Recorder,
     navigator: { mediaDevices: { getUserMedia: async () => ({ getTracks: () => [{ stop() { stopped = true; } }] }) } },
@@ -60,11 +60,44 @@ function harness() {
 }
 const settle = async () => { for (let i = 0; i < 12; i++) await new Promise(setImmediate); };
 
+test('queued messages run FIFO with updated history and preserve the next draft', async () => {
+  const h = harness(); await h.run('voiceReady');
+  const requests = [], complete = [];
+  h.ctx.fetch = async (url, options) => {
+    if (url !== '/api/chat') return { ok: true, json: async () => ({}) };
+    requests.push(JSON.parse(options.body));
+    return new Promise(resolve => complete.push(() => resolve({ ok: true, json: async () => ({ reply: 'answer' }) })));
+  };
+  h.run("messageInput.value = 'first'; submitComposerMessage(); messageInput.value = 'second'; submitComposerMessage(); messageInput.value = 'third'; submitComposerMessage(); messageInput.value = 'draft';");
+  assert.equal(requests.length, 1);
+  assert.equal(h.run('messageQueues.get(activeChatId).length'), 2);
+  assert.equal(h.run('messageInput.disabled'), false);
+  complete[0](); await settle();
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[1].messages.map(m => m.content), ['first', 'answer', 'second']);
+  assert.equal(h.run('messageInput.value'), 'draft');
+  complete[1](); await settle();
+  assert.equal(requests.length, 3);
+  assert.equal(requests[2].messages.at(-1).content, 'third');
+  complete[2](); await settle();
+  assert.equal(h.run('messageQueues.get(activeChatId).length'), 0);
+});
+
+test('queue failure retains failed job and pauses later jobs', async () => {
+  const h = harness(); await h.run('voiceReady');
+  h.run("messageInput.value = 'failed'; submitComposerMessage(); messageInput.value = 'later'; submitComposerMessage(); messageInput.value = 'draft';");
+  await settle();
+  assert.equal(h.run('pausedQueues.has(activeChatId)'), true);
+  assert.equal(h.run('messageQueues.get(activeChatId).length'), 2);
+  assert.equal(h.run('messageQueues.get(activeChatId)[0].typedText'), 'failed');
+  assert.equal(h.run('messageInput.value'), 'draft');
+});
+
 test('Enter sends once; Shift+Enter and composing text do not send', async () => {
   const h = harness(); await h.run('voiceReady');
   let sent = 0, prevented = 0;
   h.ctx.countSend = () => sent++;
-  h.run('sendMessage = countSend;');
+  h.run('submitComposerMessage = countSend;');
   const keydown = h.elements.get('messageInput').listeners.keydown;
   const event = { key: 'Enter', preventDefault() { prevented++; } };
   keydown(event);
