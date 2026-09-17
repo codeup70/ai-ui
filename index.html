@@ -21,6 +21,7 @@
           <label><input id="archivedSessions" type="checkbox" /> آرشیوشده‌ها</label>
         </div>
         <span id="sessionsStatus" class="chat-meta" role="status">در حال اتصال به Codex…</span>
+        <span id="claudeStatus" class="chat-meta" role="status">در حال اتصال به Claude…</span>
       </div>
       <div id="chatList" class="chat-list"></div>
     </aside>
@@ -57,6 +58,7 @@
         ></textarea>
         <div class="composer-footer">
           <div class="composer-tools">
+            <label id="claudeModelLabel" class="model-picker" hidden><span id="modelProviderName">مدل</span><select id="claudeModel" aria-label="مدل گفتگو"><option value="">پیش‌فرض گفتگو</option></select></label>
             <input id="fileInput" class="sr-only" type="file" multiple accept="image/png,image/jpeg,image/webp,application/pdf,text/plain,.txt,.md,.json,.csv,.js,.ts,.html,.css,.py,.xlsx,.xls" />
             <button id="attachBtn" class="icon-button" type="button">ضمیمه فایل</button>
             <button id="voiceBtn" class="icon-button" type="button">ضبط ویس</button>
@@ -88,8 +90,24 @@
   </main>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <dialog id="newClaudeDialog" class="console-card" aria-labelledby="newClaudeTitle">
+    <form id="newClaudeForm">
+      <h2 id="newClaudeTitle">گفتگوی تازه</h2>
+      <label for="newChatProvider">دستیار</label>
+      <select id="newChatProvider"><option value="codex">Codex</option><option value="claude">Claude</option></select>
+      <details id="projectOptions"><summary>اتصال به پروژه (اختیاری)</summary>
+        <label for="claudeCwd">پوشهٔ پروژه</label>
+        <input id="claudeCwd" type="text" dir="ltr" placeholder="مسیر کامل پوشهٔ پروژه" />
+      </details>
+      <p>برای سؤال و گفتگوی عادی، کافی است دستیار را انتخاب کنی و شروع کنی.</p>
+      <p id="claudeCreateError" role="alert"></p>
+      <button id="createClaudeBtn" type="submit">شروع گفتگو</button>
+      <button id="cancelClaudeBtn" class="ghost" type="button">لغو</button>
+    </form>
+  </dialog>
   <script src="voice.js"></script>
   <script src="codex-ui.js"></script>
+  <script src="claude-ui.js"></script>
   <script src="script.js"></script>
 </body>
 </html>

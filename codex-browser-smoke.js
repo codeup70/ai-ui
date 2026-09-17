@@ -62,12 +62,23 @@ try {
   await send('Runtime.enable');
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
   await send('Page.navigate', { url: `http://127.0.0.1:${appPort}` });
-  await waitFor(() => evaluate('typeof codexChats !== "undefined" && codexChats.length > 0'));
-  await evaluate('switchChat(codexChats[0].id)');
+  await waitFor(() => evaluate('typeof codexChats !== "undefined" && codexChats.some(c => c.source === "codex")'));
+  await evaluate('switchChat(codexChats.find(c => c.source === "codex").id)');
   await waitFor(() => evaluate('getActiveChat().loaded && getActiveChat().messages.length > 0'));
   const result = await evaluate('({sessions: codexChats.length, messages: getActiveChat().messages.length, bodyHeight: document.documentElement.scrollHeight, viewport: innerHeight, composerHeight: chatForm.offsetHeight})');
   assert.ok(result.sessions > 0); assert.ok(result.messages > 0);
   assert.equal(result.bodyHeight, result.viewport);
+  if (process.env.CLAUDE_BROWSER_TEST === '1') {
+    await waitFor(() => evaluate('codexChats.some(c => c.source === "claude") && document.getElementById("claudeModel").options.length > 1'));
+    await evaluate('switchChat(codexChats.find(c => c.source === "claude").id)');
+    await waitFor(() => evaluate('getActiveChat().loaded'));
+    const claude = await evaluate('({models: document.getElementById("claudeModel").options.length, modelVisible: !document.getElementById("claudeModelLabel").hidden, clearHidden: clearBtn.hidden, messages: getActiveChat().messages.length, fits: document.documentElement.scrollHeight === innerHeight})');
+    assert.ok(claude.modelVisible && claude.clearHidden && claude.fits);
+    await evaluate('document.getElementById("newChatBtn").click()');
+    assert.equal(await evaluate('document.getElementById("newClaudeDialog").open'), true);
+    await evaluate('document.getElementById("cancelClaudeBtn").click()');
+    console.log(JSON.stringify({ claude }));
+  }
   assert.equal(exceptions.length, 0, exceptions.join('\n'));
   console.log(JSON.stringify(result));
   // Close the browser through its protocol so no visible/background helper is left.

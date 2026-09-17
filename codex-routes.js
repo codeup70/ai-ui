@@ -1,10 +1,12 @@
 import express from 'express';
+import path from 'node:path';
+import { resolveChatWorkspace, isGeneralChat } from './chat-workspace.js';
 import { CodexClient } from './codex-client.js';
 
 export function summarizeThread(thread) {
   return {
     id: thread.id, title: thread.name || thread.preview?.slice(0, 80) || 'گفتگوی Codex',
-    cwd: thread.cwd || '', preview: thread.preview || '',
+    cwd: thread.cwd || '', general: isGeneralChat(thread.cwd), preview: thread.preview || '',
     createdAt: new Date((thread.createdAt || 0) * 1000).toISOString(),
     updatedAt: new Date((thread.updatedAt || thread.createdAt || 0) * 1000).toISOString(),
     status: thread.status?.type || 'notLoaded',
@@ -98,6 +100,20 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
     }
     res.json({ threads: result.data.map(summarizeThread), nextCursor: result.nextCursor });
   }));
+  router.get('/models', handle(async (_req, res) => {
+    const models = []; let cursor = null;
+    do {
+      const result = await client.request('model/list', { cursor });
+      models.push(...result.data.map(m => ({ value: m.model, displayName: m.displayName || m.model })));
+      cursor = result.nextCursor;
+    } while (cursor);
+    res.json({ models });
+  }));
+  router.post('/threads', handle(async (req, res) => {
+    const cwd = await resolveChatWorkspace(req.body.cwd);
+    const { thread } = await client.request('thread/start', { cwd: path.resolve(cwd) });
+    res.json({ thread: summarizeThread(thread) });
+  }));
   router.get('/threads/:id', handle(async (req, res) => {
     const { thread } = await client.request('thread/read', { threadId: req.params.id, includeTurns: true });
     const turns = thread.turns || [];
@@ -137,7 +153,9 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
       const { thread } = await client.request('thread/resume', { threadId: id, cwd: stored.thread.cwd });
       if (thread.status?.type === 'active') throw new Error('این سشن در حال اجراست؛ صبر کن تا کار فعلی تمام شود.');
       const input = [...(text ? [{ type: 'text', text }] : []), ...extra];
-      const { turn } = await client.request('turn/start', { threadId: id, input });
+      const model = req.body.model;
+      if (model && (typeof model !== 'string' || model.length > 200)) throw new Error('مدل نامعتبر است.');
+      const { turn } = await client.request('turn/start', { threadId: id, input, ...(model ? { model } : {}) });
       // turn/started is authoritative; completion may race this response.
       res.json({ turnId: turn.id });
     } finally { starting.delete(id); }

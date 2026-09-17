@@ -5,8 +5,11 @@ const codexThreadRefreshes = new Set();
 let codexRequestSignature = '';
 let codexListVersion = 0;
 
-async function codexApi(url, body) {
-  const response = await fetch('/api/codex' + url, body === undefined ? {} : {
+function isProjectChat(chat) { return chat?.source === 'codex' || chat?.source === 'claude'; }
+function agentName(chat) { return chat?.source === 'claude' ? 'Claude' : 'Codex'; }
+function projectApi(chat, url, body) { return codexApi(url, body, chat.source); }
+async function codexApi(url, body, source = 'codex') {
+  const response = await fetch('/api/' + source + url, body === undefined ? {} : {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
   if (!response.headers.get('content-type')?.includes('application/json')) {
@@ -21,13 +24,15 @@ function renderCodexList(container) {
   const projects = new Map();
   for (const chat of codexChats) {
     if (chat.archived !== document.getElementById('archivedSessions').checked) continue;
-    if (!projects.has(chat.cwd)) projects.set(chat.cwd, []);
-    projects.get(chat.cwd).push(chat);
+    const key = `${chat.source}:${chat.general ? 'general' : chat.cwd}`;
+    if (!projects.has(key)) projects.set(key, []);
+    projects.get(key).push(chat);
   }
-  for (const [cwd, chats] of projects) {
+  for (const chats of projects.values()) {
+    const cwd = chats[0].cwd;
     const heading = document.createElement('div');
     heading.className = 'project-heading';
-    heading.textContent = cwd.split(/[\\/]/).filter(Boolean).pop() || 'Codex';
+    heading.textContent = `${agentName(chats[0])} · ${chats[0].general ? 'گفتگوهای عادی' : cwd.split(/[\\/]/).filter(Boolean).pop() || 'پروژه'}`;
     heading.title = cwd;
     container.append(heading);
     for (const chat of chats) {
@@ -39,7 +44,7 @@ function renderCodexList(container) {
       title.textContent = chat.title;
       const meta = document.createElement('span');
       meta.className = 'chat-meta';
-      meta.textContent = sendingChatIds.has(chat.id) ? 'Codex در حال کار…' : formatTime(chat.updatedAt);
+      meta.textContent = sendingChatIds.has(chat.id) ? `${agentName(chat)} در حال کار…` : formatTime(chat.updatedAt);
       button.append(title, meta);
       button.onclick = () => switchChat(chat.id);
       const row = document.createElement('div');
@@ -82,12 +87,13 @@ async function refreshCodexSessions() {
       const id = 'codex_' + thread.id;
       const existing = codexChats.find(chat => chat.id === id);
       return Object.assign(existing || normalizeChat({ ...thread, id }), { title: thread.title, cwd: thread.cwd,
-        updatedAt: thread.updatedAt, source: 'codex', threadId: thread.id, archived });
+        updatedAt: thread.updatedAt, general: thread.general, source: 'codex', threadId: thread.id, archived });
     });
     // Keep an open thread available if the list filter changes.
     const active = codexChats.find(chat => chat.id === activeChatId);
     if (active && !next.some(chat => chat.id === active.id)) next.push(active);
-    codexChats.splice(0, codexChats.length, ...next);
+    const claude = codexChats.filter(chat => chat.source === 'claude');
+    codexChats.splice(0, codexChats.length, ...next.filter(chat => chat.source !== 'claude'), ...claude);
     renderChatList();
     status.textContent = `${formatNumber(records.length)} سشن Codex`;
   } catch (error) { status.textContent = error.message; }
@@ -98,17 +104,18 @@ async function refreshCodexSessions() {
 }
 async function toggleCodexArchive() {
   const chat = getActiveChat();
-  if (chat.source !== 'codex' || chat.archiving || chat.deleting || voiceSession || sendingChatIds.has(chat.id)) return;
+  if (!isProjectChat(chat) || chat.archiving || chat.deleting || voiceSession || sendingChatIds.has(chat.id)) return;
   const archived = !chat.archived;
   chat.archiving = true;
   syncComposerState();
   try {
-    await codexApi(`/threads/${encodeURIComponent(chat.threadId)}/archive`, { archived });
+    await projectApi(chat, `/threads/${encodeURIComponent(chat.threadId)}/archive`, { archived });
     codexListVersion++;
     chat.archived = archived;
     // Keep the opened history available, but remove it from the opposite list.
     renderChatList();
     await refreshCodexSessions();
+    if (typeof refreshClaudeSessions === 'function') await refreshClaudeSessions();
     showToast(archived ? 'گفتگو آرشیو شد؛ از «آرشیوشده‌ها» قابل بازیابی است.' : 'گفتگو از آرشیو خارج شد.');
   } catch (error) { showToast(error.message); }
   finally { chat.archiving = false; syncComposerState(); }
@@ -121,7 +128,7 @@ async function deleteCodexChat(chatId) {
   syncComposerState();
   renderChatList();
   try {
-    await codexApi(`/threads/${encodeURIComponent(chat.threadId)}/delete`, { confirmedThreadId: chat.threadId });
+    await projectApi(chat, `/threads/${encodeURIComponent(chat.threadId)}/delete`, { confirmedThreadId: chat.threadId });
     codexListVersion++;
     codexChats.splice(codexChats.indexOf(chat), 1);
     discardChatVoice(chat.id);
@@ -130,6 +137,7 @@ async function deleteCodexChat(chatId) {
       switchChat(chatStore.chats[0].id);
     }
     await refreshCodexSessions();
+    if (typeof refreshClaudeSessions === 'function') await refreshClaudeSessions();
     renderChatList();
     showToast('گفتگو حذف شد.');
   } catch (error) { showToast(error.message); }
@@ -140,7 +148,7 @@ async function refreshCodexThread(chatId) {
   if (!chat || codexThreadRefreshes.has(chatId)) return;
   codexThreadRefreshes.add(chatId);
   try {
-    const data = await codexApi('/threads/' + encodeURIComponent(chat.threadId));
+    const data = await projectApi(chat, '/threads/' + encodeURIComponent(chat.threadId));
     for (const clip of codexVoiceClips.values()) {
       if (clip.threadId !== chat.threadId) continue;
       const message = clip.messageId ? data.messages.find(m => m.id === clip.messageId) : [...data.messages].reverse().find(m => m.role === 'user' && m.content === clip.prompt);
@@ -156,6 +164,7 @@ async function refreshCodexThread(chatId) {
     chat.messages = data.messages;
     chat.title = data.title;
     chat.cwd = data.cwd;
+    chat.general = data.general;
     chat.updatedAt = data.updatedAt;
     chat.requests = data.requests;
     chat.statusLog = data.activity.map(item => ({ at: data.updatedAt, type: item.status === 'failed' ? 'error' : 'info', text: `${item.text || ''}\n${item.output || ''}`.trim() }));
@@ -180,7 +189,7 @@ async function refreshCodexThread(chatId) {
       syncComposerState();
       renderConsole();
       renderCodexRequests();
-      setStatus(data.running ? 'Codex در حال کار روی پروژه…' : data.error || 'آمادهٔ ادامهٔ این سشن');
+      setStatus(data.running ? `${agentName(chat)} در حال کار روی پروژه…` : data.error || 'آمادهٔ ادامهٔ این سشن');
     }
     renderChatList();
   } catch (error) {
@@ -191,7 +200,7 @@ async function refreshCodexThread(chatId) {
 function renderCodexRequests() {
   const panel = document.getElementById('codexRequests');
   const chat = getActiveChat();
-  const requests = chat.source === 'codex' ? chat.requests || [] : [];
+  const requests = isProjectChat(chat) ? chat.requests || [] : [];
   const signature = chat.id + JSON.stringify(requests);
   if (signature === codexRequestSignature) return;
   codexRequestSignature = signature;
@@ -200,7 +209,7 @@ function renderCodexRequests() {
     const box = document.createElement('div');
     box.className = 'codex-request';
     const title = document.createElement('strong');
-    title.textContent = request.method === 'item/tool/requestUserInput' ? 'سؤال Codex' : 'Codex به اجازهٔ شما نیاز دارد';
+    title.textContent = request.method === 'item/tool/requestUserInput' ? `سؤال ${agentName(chat)}` : `${agentName(chat)} به اجازهٔ شما نیاز دارد`;
     box.append(title);
     const details = document.createElement('pre');
     details.textContent = [request.reason, request.command, request.cwd, request.grantRoot,
@@ -220,7 +229,7 @@ function renderCodexRequests() {
     }
     const answer = async body => {
       try {
-        await codexApi(`/threads/${encodeURIComponent(chat.threadId)}/requests/${encodeURIComponent(request.id)}`, body);
+        await projectApi(chat, `/threads/${encodeURIComponent(chat.threadId)}/requests/${encodeURIComponent(request.id)}`, body);
         await refreshCodexThread(chat.id);
       } catch (error) { showToast(error.message); }
     };
@@ -252,7 +261,7 @@ async function sendCodexMessage(job) {
   sendingChatIds.add(chat.id);
   syncComposerState();
   try {
-    await codexApi(`/threads/${encodeURIComponent(chat.threadId)}/turns`, { text, attachmentIds: attachments.map(a => a.id) });
+    await projectApi(chat, `/threads/${encodeURIComponent(chat.threadId)}/turns`, { text, attachmentIds: attachments.map(a => a.id), model: job?.model ?? chat.model ?? '' });
     if (chat.archived) { chat.archived = false; codexListVersion++; refreshCodexSessions(); }
     if (!job && activeChatId === chat.id) { messageInput.value = ''; pendingAttachments = []; }
     if (voice) {
@@ -279,13 +288,13 @@ async function sendCodexMessage(job) {
 }
 function setupCodexSessions() {
   document.getElementById('archiveChatBtn').onclick = toggleCodexArchive;
-  document.getElementById('refreshSessionsBtn').onclick = refreshCodexSessions;
-  document.getElementById('archivedSessions').onchange = () => { codexListVersion++; refreshCodexSessions(); };
+  document.getElementById('refreshSessionsBtn').onclick = () => { refreshCodexSessions(); if (typeof refreshClaudeSessions === 'function') refreshClaudeSessions(); };
+  document.getElementById('archivedSessions').onchange = () => { codexListVersion++; refreshCodexSessions(); if (typeof refreshClaudeSessions === 'function') refreshClaudeSessions(); };
   document.getElementById('stopCodexBtn').onclick = async () => {
     const chat = getActiveChat();
     pausedQueues.add(chat.id);
     renderMessageQueue();
-    try { await codexApi(`/threads/${encodeURIComponent(chat.threadId)}/interrupt`, {}); await refreshCodexThread(chat.id); }
+    try { await projectApi(chat, `/threads/${encodeURIComponent(chat.threadId)}/interrupt`, {}); await refreshCodexThread(chat.id); }
     catch (error) { showToast(error.message); }
   };
   const previous = localStorage.getItem('persian-chat-active-session');

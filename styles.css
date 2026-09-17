@@ -512,3 +512,21 @@ textarea:disabled { opacity: 0.65; }
   .sidebar-collapsed .sidebar { padding: 6px 10px; }
   .sidebar-collapsed .brand-block { flex-direction: row; justify-content: flex-start; }
 }
+.model-picker { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; padding: 4px 10px; border: 1px solid var(--border-strong); border-radius: 12px; background: var(--panel-2); font-size: 12px; transition: border-color 150ms, background 150ms; }
+.model-picker[hidden] { display: none; }
+.model-picker:hover { background: var(--panel-3); border-color: var(--primary-2); }
+.model-picker:focus-within { outline: 2px solid var(--primary-2); outline-offset: 2px; }
+#modelProviderName { color: var(--primary-2); font-weight: 700; direction: ltr; }
+#claudeModel { width: 185px; max-width: 42vw; min-width: 0; padding: 5px 2px; border: 0; background: transparent; color: var(--text); font: inherit; cursor: pointer; text-overflow: ellipsis; }
+#claudeModel:focus { outline: none; }
+#claudeModel option { background: var(--bg-2); color: var(--text); }
+#newClaudeForm { display: grid; gap: 12px; }
+#newClaudeForm h2, #newClaudeForm p { margin: 0; }
+#newClaudeForm p { font-size: 13px; line-height: 1.8; color: var(--muted); }
+#newChatProvider, #claudeCwd { border: 1px solid var(--border-strong); border-radius: 12px; background: var(--bg-2); color: var(--text); padding: 10px 12px; font: inherit; }
+#projectOptions summary { cursor: pointer; color: var(--soft); font-size: 13px; padding: 8px 0; }
+#projectOptions label { display: block; margin: 8px 0; font-size: 12px; color: var(--muted); }
+#claudeCwd { width: 100%; box-sizing: border-box; padding: 10px; font: inherit; }
+#newClaudeDialog { max-width: min(540px, 90vw); }
+#newClaudeDialog:not([open]) { display: none; }
+.sidebar-collapsed #claudeStatus { display: none; }

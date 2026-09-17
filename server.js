@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import { loadProvider, requestProvider } from './provider.js';
 import { installCodexRoutes } from './codex-routes.js';
+import { installClaudeRoutes } from './claude-routes.js';
 
 import readExcelFile from 'read-excel-file/node';
 import crypto from 'crypto';
@@ -38,7 +39,7 @@ const SHEET_EXTENSIONS = new Set(['.xlsx', '.xls']);
 
 app.use(express.json({ limit: '45mb' }));
 app.use('/uploads', (_req, res) => res.sendStatus(404));
-for (const file of ['index.html', 'script.js', 'voice.js', 'codex-ui.js', 'styles.css']) {
+for (const file of ['index.html', 'script.js', 'voice.js', 'codex-ui.js', 'claude-ui.js', 'styles.css']) {
   app.get(file === 'index.html' ? '/' : '/' + file, (_req, res) => res.sendFile(path.resolve(file)));
 }
 
@@ -60,6 +61,18 @@ const codexClient = installCodexRoutes(app, { attachmentInput: async ids => {
   return input;
 } });
 process.on('exit', () => codexClient.close());
+const claudeClient = installClaudeRoutes(app, { attachmentInput: async ids => {
+  const blocks = [];
+  for (const id of ids) {
+    const meta = await readMeta(id);
+    if (meta.mode === 'image' || meta.mode === 'pdf') {
+      const data = await fsp.readFile(path.join(UPLOADS_DIR, meta.id, 'original'), 'base64');
+      blocks.push({ type: meta.mode === 'image' ? 'image' : 'document', source: { type: 'base64', media_type: meta.mimeType, data } });
+    } else blocks.push((await attachmentToContentBlock(id)).block);
+  }
+  return blocks;
+} });
+process.on('exit', () => claudeClient.close());
 if (process.env.CODEX_SMOKE_TEST === '1') process.stdin.on('end', () => { codexClient.close(); process.exit(0); }).resume();
 async function ensureUploadsDir() {
   await fsp.mkdir(UPLOADS_DIR, { recursive: true });

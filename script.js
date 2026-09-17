@@ -56,7 +56,7 @@ function drainMessageQueue(chatId) {
   const job = messageQueues.get(chatId)?.shift();
   if (!job) return;
   renderMessageQueue();
-  if (chat.source === 'codex') sendCodexMessage(job);
+  if (isProjectChat(chat)) sendCodexMessage(job);
   else sendMessage(job);
 }
 function requeueMessage(job) {
@@ -73,7 +73,7 @@ function submitComposerMessage() {
   if (voice && (!voice.transcript || voice.error)) { showToast('متن ویس کامل نیست.'); return; }
   const typedText = messageInput.value.trim();
   if (!typedText && !voice && !pendingAttachments.length) return;
-  const job = { chatId: chat.id, typedText, voice, attachments: [...pendingAttachments] };
+  const job = { chatId: chat.id, typedText, voice, attachments: [...pendingAttachments], model: chat.model || '' };
   const queue = messageQueues.get(chat.id) || [];
   queue.push(job); messageQueues.set(chat.id, queue);
   messageInput.value = ''; pendingAttachments = []; voiceDrafts.delete(chat.id);
@@ -349,7 +349,7 @@ function createMessageElement(message, options = {}) {
 
   const label = document.createElement('div');
   label.className = 'message-label';
-  label.textContent = message.role === 'user' ? 'شما' : getActiveChat().source === 'codex' ? 'Codex' : 'OpenAI';
+  label.textContent = message.role === 'user' ? 'شما' : isProjectChat(getActiveChat()) ? agentName(getActiveChat()) : 'OpenAI';
 
   const bubble = document.createElement('div');
   bubble.className = 'message-bubble';
@@ -379,7 +379,7 @@ function renderMessages() {
   releaseVoicePlayers(chatLog);
   chatLog.innerHTML = '';
   activeChatTitle.textContent = chat.title;
-  document.getElementById('projectPath').textContent = chat.source === 'codex' ? chat.cwd : 'گفتگوی عادی';
+  document.getElementById('projectPath').textContent = isProjectChat(chat) && !chat.general ? chat.cwd : 'گفتگوی عادی';
 
   if (!chat.messages.length) {
     const empty = document.createElement('div');
@@ -393,7 +393,7 @@ function renderMessages() {
     const fragment = document.createDocumentFragment();
     for (const message of chat.messages) fragment.append(createMessageElement(message));
     if (sendingChatIds.has(chat.id)) {
-      fragment.append(createMessageElement({ role: 'assistant', content: chat.source === 'codex' ? 'Codex در حال کار روی پروژه…' : 'OpenAI در حال پاسخ است…' }, { pending: true }));
+      fragment.append(createMessageElement({ role: 'assistant', content: isProjectChat(chat) ? `${agentName(chat)} در حال کار روی پروژه…` : 'OpenAI در حال پاسخ است…' }, { pending: true }));
     }
     chatLog.append(fragment);
   }
@@ -499,7 +499,8 @@ function syncComposerState() {
   messageInput.disabled = Boolean(getActiveChat().archiving || getActiveChat().deleting);
   sendBtn.textContent = activeIsSending ? 'افزودن به صف' : 'ارسال';
   renderMessageQueue();
-  const codex = getActiveChat().source === 'codex';
+  const codex = isProjectChat(getActiveChat());
+  if (typeof syncClaudeModel === 'function') syncClaudeModel();
   clearBtn.disabled = codex;
   clearBtn.hidden = codex;
   const archiveBtn = document.getElementById('archiveChatBtn');
@@ -529,7 +530,7 @@ function switchChat(chatId) {
   saveChatStore();
   renderApp();
   messageInput.focus();
-  if (getActiveChat().source === 'codex') refreshCodexThread(chatId);
+  if (isProjectChat(getActiveChat())) refreshCodexThread(chatId);
 }
 
 function deleteChat(chatId) {
@@ -636,7 +637,7 @@ async function estimateTokens(chatId) {
 }
 
 async function sendMessage(job) {
-  if (!job && getActiveChat().source === 'codex') return sendCodexMessage();
+  if (!job && isProjectChat(getActiveChat())) return sendCodexMessage();
   if (!job && voiceSession) { showToast('اول ضبط ویس را متوقف کن.'); return; }
   const voice = job ? job.voice : voiceDrafts.get(activeChatId);
   if (voice && (!voice.transcript || voice.error)) {
@@ -758,7 +759,7 @@ chatForm.addEventListener('submit', (event) => {
   submitComposerMessage();
 });
 
-newChatBtn.addEventListener('click', addNewChat);
+newChatBtn.addEventListener('click', () => openNewChatDialog());
 document.getElementById('stopOpenAIBtn').addEventListener('click', () => openAIControllers.get(activeChatId)?.abort());
 attachBtn.addEventListener('click', () => fileInput.click());
 voiceBtn.addEventListener('click', toggleVoiceInput);
@@ -778,7 +779,7 @@ messageInput.addEventListener('keydown', (event) => {
 clearBtn.addEventListener('click', () => {
   if (voiceSession) { showToast('اول ضبط ویس را متوقف کن.'); return; }
   const chat = getActiveChat();
-  if (chat.source === 'codex' || sendingChatIds.has(chat.id)) return;
+  if (isProjectChat(chat) || sendingChatIds.has(chat.id)) return;
   if (!window.confirm(`تمام پیام‌های گفتگوی «${chat.title}» پاک شوند؟ این کار قابل بازگشت نیست.`)) return;
   discardChatVoice(chat.id);
   chat.messages = [];
@@ -826,3 +827,4 @@ consoleDialog.addEventListener('click', event => {
 setupVoiceInput();
 renderApp();
 setupCodexSessions();
+if (typeof setupClaudeSessions === 'function') setupClaudeSessions();

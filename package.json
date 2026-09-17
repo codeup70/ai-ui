@@ -13,11 +13,12 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test codex.test.js voice.test.cjs",
+    "test": "node --test codex.test.js claude.test.js voice.test.cjs",
     "test:codex": "node codex-smoke.js",
     "test:browser": "node --experimental-websocket codex-browser-smoke.js"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.274",
     "dotenv": "latest",
     "express": "latest",
     "read-excel-file": "^9.2.0",

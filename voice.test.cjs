@@ -53,7 +53,8 @@ function harness() {
   });
   vm.runInContext(fs.readFileSync('voice.js', 'utf8'), ctx);
   vm.runInContext(fs.readFileSync('codex-ui.js', 'utf8'), ctx);
-  vm.runInContext(fs.readFileSync('script.js', 'utf8').replace(/setupVoiceInput\(\);\s*renderApp\(\);\s*setupCodexSessions\(\);\s*$/, ''), ctx);
+  vm.runInContext(fs.readFileSync('claude-ui.js', 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync('script.js', 'utf8').replace(/setupVoiceInput\(\);\s*renderApp\(\);\s*setupCodexSessions\(\);[\s\S]*$/, ''), ctx);
   vm.runInContext('renderChatList = renderMessages = renderConsole = () => {};', ctx);
   const run = code => vm.runInContext(code, ctx);
   return { ctx, run, clips, elements, get recognition() { return recognition; }, get recorder() { return recorder; }, get stopped() { return stopped; } };

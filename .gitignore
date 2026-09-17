@@ -37,3 +37,4 @@ app.url
 *.jsonl
 auth.json
 config.toml
+.claude-ui-state.json*
