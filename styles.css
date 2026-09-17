@@ -44,7 +44,7 @@
 .codex-request input { min-width: 0; padding: 8px; background: var(--bg-2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; }
 .codex-request button { padding: 6px 10px; margin: 3px; }
 
-html { scroll-behavior: smooth; }
+html { scroll-behavior: auto; }
 
 body {
   margin: 0;
@@ -227,7 +227,7 @@ p { color: var(--muted); line-height: 1.85; }
   flex-direction: column;
   gap: 17px;
   padding: 14px 8px;
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
 }
