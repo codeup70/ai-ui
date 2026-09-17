@@ -530,3 +530,25 @@ textarea:disabled { opacity: 0.65; }
 #newClaudeDialog { max-width: min(540px, 90vw); }
 #newClaudeDialog:not([open]) { display: none; }
 .sidebar-collapsed #claudeStatus { display: none; }
+
+/* Keep sidebar controls compact so the conversation list gets the height. */
+.sidebar { padding: 12px; gap: 8px; }
+.sidebar .brand-block {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  padding-bottom: 8px;
+}
+.sidebar .sidebar-toggle { width: 30px; height: 30px; font-size: 17px; align-self: center; }
+.sidebar-brand .eyebrow { display: none; }
+.sidebar-brand h1 { font-size: 15px; letter-spacing: normal; }
+.sidebar #newChatBtn { padding: 6px 9px; font-size: 12px; border-radius: 10px; }
+.sidebar .session-controls { grid-column: 1 / -1; gap: 5px 9px; font-size: 11px; }
+.sidebar .session-controls button { padding: 4px 7px; font-size: 11px; }
+.sidebar .session-controls label { display: inline-flex; align-items: center; gap: 3px; }
+.sidebar .session-controls input { margin: 0; }
+.sidebar #sessionsStatus { grid-column: 1 / 3; }
+.sidebar #claudeStatus { grid-column: 3; }
+.sidebar #sessionsStatus, .sidebar #claudeStatus { font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.sidebar-collapsed .sidebar .brand-block { display: flex; }

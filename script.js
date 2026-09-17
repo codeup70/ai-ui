@@ -29,6 +29,7 @@ const openAIControllers = new Map();
 const messageQueues = new Map();
 const pausedQueues = new Set();
 function renderMessageQueue() {
+  renderActiveChats();
   const panel = document.getElementById('messageQueue');
   panel.replaceChildren();
   const queue = messageQueues.get(activeChatId) || [];
@@ -408,42 +409,50 @@ function getLastPreview(chat) {
   return last.content ? last.content.replace(/\s+/g, ' ').slice(0, 70) : 'فایل ضمیمه شده است';
 }
 
+function isActiveConversation(chat) {
+  return !chat.deleting && Boolean(sendingChatIds.has(chat.id) || chat.requests?.length || messageQueues.get(chat.id)?.length || chat.unreadReply || chat.id === activeChatId);
+}
+function chatLastMessageTime(chat) {
+  const messages = chat.messages || [];
+  const last = [...messages].reverse().find(message => message.createdAt);
+  return Math.max(Date.parse(chat.lastMessageAt || '') || 0,
+    isProjectChat(chat) ? Date.parse(chat.updatedAt || '') || 0 : Date.parse(last?.createdAt || chat.createdAt || '') || 0);
+}
+function renderActiveChats() { renderChatList(); }
 function renderChatList() {
   chatList.innerHTML = '';
-  renderCodexList(chatList);
-  const sorted = [...chatStore.chats].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
-
+  const archived = document.getElementById('archivedSessions').checked;
+  const activeOnly = document.getElementById('activeSessions').checked;
+  const sorted = [...chatStore.chats, ...codexChats]
+    .filter(chat => Boolean(chat.archived) === Boolean(archived) && (!activeOnly || isActiveConversation(chat)))
+    .sort((a, b) => chatLastMessageTime(b) - chatLastMessageTime(a));
   for (const chat of sorted) {
-    const item = document.createElement('button');
-    item.type = 'button';
+    const row = document.createElement('div'); row.className = 'session-row';
+    const item = document.createElement('button'); item.type = 'button';
     item.className = `chat-list-item ${chat.id === activeChatId ? 'active' : ''}`;
-    item.addEventListener('click', () => switchChat(chat.id));
-
-    const title = document.createElement('strong');
-    title.className = 'chat-title';
-    title.textContent = chat.title;
-
-    const preview = document.createElement('span');
-    preview.className = 'chat-preview';
-    preview.textContent = sendingChatIds.has(chat.id) ? 'در حال پاسخ…' : getLastPreview(chat);
-
-    const meta = document.createElement('span');
-    meta.className = 'chat-meta';
-    meta.textContent = formatTime(chat.updatedAt);
-
-    const deleteBtn = document.createElement('span');
-    deleteBtn.className = 'chat-delete';
-    deleteBtn.textContent = 'حذف';
-    deleteBtn.addEventListener('click', (event) => {
-      event.stopPropagation();
-      deleteChat(chat.id);
-    });
-
-    item.append(title, preview, meta, deleteBtn);
-    chatList.append(item);
+    item.onclick = () => switchChat(chat.id);
+    const title = document.createElement('strong'); title.className = 'chat-title'; title.textContent = chat.title;
+    const preview = document.createElement('span'); preview.className = 'chat-preview';
+    const queued = messageQueues.get(chat.id)?.length || 0;
+    preview.textContent = chat.requests?.length ? 'منتظر پاسخ تو' : sendingChatIds.has(chat.id) ? 'در حال کار…' :
+      chat.unreadReply ? 'پاسخ آماده است' : getLastPreview(chat);
+    if (queued) preview.textContent += ` · ${formatNumber(queued)} در صف${pausedQueues.has(chat.id) ? ' (متوقف)' : ''}`;
+    const meta = document.createElement('span'); meta.className = 'chat-meta';
+    const project = isProjectChat(chat) && !chat.general ? (chat.cwd || '').split(/[\\/]/).filter(Boolean).pop() : '';
+    meta.textContent = [isProjectChat(chat) ? agentName(chat) : 'OpenAI', project, formatTime(new Date(chatLastMessageTime(chat)).toISOString())].filter(Boolean).join(' · ');
+    item.append(title, preview, meta);
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'ghost session-delete'; remove.textContent = 'حذف';
+    remove.setAttribute('aria-label', `حذف گفتگوی ${chat.title}`);
+    remove.disabled = Boolean(chat.deleting || chat.archiving || voiceSession || sendingChatIds.has(chat.id));
+    remove.onclick = () => isProjectChat(chat) ? deleteCodexChat(chat.id) : deleteChat(chat.id);
+    row.append(item, remove); chatList.append(row);
+  }
+  if (!sorted.length) {
+    const empty = document.createElement('p'); empty.className = 'chat-meta';
+    empty.textContent = activeOnly ? 'گفتگوی فعالی در این فهرست نیست.' : 'گفتگویی در این فهرست نیست.';
+    chatList.append(empty);
   }
 }
-
 function renderConsole() {
   const chat = getActiveChat();
   const usage = { ...createEmptyUsage(), ...(chat.usageSummary || {}) };
@@ -525,6 +534,8 @@ function renderApp() {
 function switchChat(chatId) {
   if (voiceSession) { showToast('اول ضبط ویس را متوقف کن.'); return; }
   activeChatId = chatId;
+  const opened = getChatById(chatId);
+  if (opened) opened.unreadReply = false;
   chatStore.activeChatId = chatId;
   pendingAttachments = [];
   saveChatStore();
@@ -729,7 +740,7 @@ async function sendMessage(job) {
       );
     }
 
-    if (chatId !== activeChatId) showToast(`پاسخ «${targetChat.title}» آماده شد.`);
+    if (chatId !== activeChatId) { targetChat.unreadReply = true; showToast(`پاسخ «${targetChat.title}» آماده شد.`); }
   } catch (error) {
     const targetChat = getChatById(chatId);
     if (targetChat) {

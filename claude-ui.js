@@ -40,7 +40,7 @@ async function refreshClaudeSessions() {
         { source: 'claude', general: thread.general, threadId: thread.id, title: thread.title, cwd: thread.cwd, updatedAt: thread.updatedAt, archived });
     });
     for (const chat of codexChats) {
-      if (chat.source === 'claude' && (chat.id === activeChatId || sendingChatIds.has(chat.id) || messageQueues.get(chat.id)?.length) && !next.some(item => item.id === chat.id)) next.push(chat);
+      if (chat.source === 'claude' && (chat.id === activeChatId || sendingChatIds.has(chat.id) || chat.unreadReply || messageQueues.get(chat.id)?.length) && !next.some(item => item.id === chat.id)) next.push(chat);
     }
     const codex = codexChats.filter(chat => chat.source !== 'claude');
     codexChats.splice(0, codexChats.length, ...codex, ...next);

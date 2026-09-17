@@ -20,51 +20,6 @@ async function codexApi(url, body, source = 'codex') {
   if (!response.ok) throw new Error(data.error || 'ارتباط با Codex ناموفق بود.');
   return data;
 }
-function renderCodexList(container) {
-  const projects = new Map();
-  for (const chat of codexChats) {
-    if (chat.archived !== document.getElementById('archivedSessions').checked) continue;
-    const key = `${chat.source}:${chat.general ? 'general' : chat.cwd}`;
-    if (!projects.has(key)) projects.set(key, []);
-    projects.get(key).push(chat);
-  }
-  for (const chats of projects.values()) {
-    const cwd = chats[0].cwd;
-    const heading = document.createElement('div');
-    heading.className = 'project-heading';
-    heading.textContent = `${agentName(chats[0])} · ${chats[0].general ? 'گفتگوهای عادی' : cwd.split(/[\\/]/).filter(Boolean).pop() || 'پروژه'}`;
-    heading.title = cwd;
-    container.append(heading);
-    for (const chat of chats) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = `chat-list-item ${chat.id === activeChatId ? 'active' : ''}`;
-      const title = document.createElement('strong');
-      title.className = 'chat-title';
-      title.textContent = chat.title;
-      const meta = document.createElement('span');
-      meta.className = 'chat-meta';
-      meta.textContent = sendingChatIds.has(chat.id) ? `${agentName(chat)} در حال کار…` : formatTime(chat.updatedAt);
-      button.append(title, meta);
-      button.onclick = () => switchChat(chat.id);
-      const row = document.createElement('div');
-      row.className = 'session-row';
-      const remove = document.createElement('button');
-      remove.type = 'button';
-      remove.className = 'ghost session-delete';
-      remove.textContent = 'حذف';
-      remove.setAttribute('aria-label', `حذف گفتگوی ${chat.title}`);
-      remove.disabled = Boolean(chat.deleting || chat.archiving || voiceSession || sendingChatIds.has(chat.id));
-      remove.onclick = () => deleteCodexChat(chat.id);
-      row.append(button, remove);
-      container.append(row);
-    }
-  }
-  const heading = document.createElement('div');
-  heading.className = 'project-heading';
-  heading.textContent = 'گفتگوهای عادی';
-  container.append(heading);
-}
 async function refreshCodexSessions() {
   if (codexRefreshing) return;
   codexRefreshing = true;
@@ -90,8 +45,9 @@ async function refreshCodexSessions() {
         updatedAt: thread.updatedAt, general: thread.general, source: 'codex', threadId: thread.id, archived });
     });
     // Keep an open thread available if the list filter changes.
-    const active = codexChats.find(chat => chat.id === activeChatId);
-    if (active && !next.some(chat => chat.id === active.id)) next.push(active);
+    for (const active of codexChats) {
+      if (active.source === 'codex' && (active.id === activeChatId || sendingChatIds.has(active.id) || active.unreadReply || messageQueues.get(active.id)?.length) && !next.some(chat => chat.id === active.id)) next.push(active);
+    }
     const claude = codexChats.filter(chat => chat.source === 'claude');
     codexChats.splice(0, codexChats.length, ...next.filter(chat => chat.source !== 'claude'), ...claude);
     renderChatList();
@@ -161,6 +117,7 @@ async function refreshCodexThread(chatId) {
       }
     }
     const changed = JSON.stringify(chat.messages) !== JSON.stringify(data.messages);
+    if (chat.loaded && changed) chat.lastMessageAt = nowIso();
     chat.messages = data.messages;
     chat.title = data.title;
     chat.cwd = data.cwd;
@@ -176,6 +133,7 @@ async function refreshCodexThread(chatId) {
       chat.usageSummary.total_input_tokens = data.usage.total.inputTokens || 0;
       chat.usageSummary.total_output_tokens = data.usage.total.outputTokens || 0;
     }
+    if (!data.running && !chat.submitting && sendingChatIds.has(chatId) && chatId !== activeChatId) chat.unreadReply = true;
     if (data.running) sendingChatIds.add(chatId);
     else if (!chat.submitting) sendingChatIds.delete(chatId);
     if (chatId === activeChatId) {
@@ -262,6 +220,8 @@ async function sendCodexMessage(job) {
   syncComposerState();
   try {
     await projectApi(chat, `/threads/${encodeURIComponent(chat.threadId)}/turns`, { text, attachmentIds: attachments.map(a => a.id), model: job?.model ?? chat.model ?? '' });
+    chat.lastMessageAt = nowIso();
+    renderChatList();
     if (chat.archived) { chat.archived = false; codexListVersion++; refreshCodexSessions(); }
     if (!job && activeChatId === chat.id) { messageInput.value = ''; pendingAttachments = []; }
     if (voice) {
@@ -287,6 +247,7 @@ async function sendCodexMessage(job) {
   }
 }
 function setupCodexSessions() {
+  document.getElementById('activeSessions').onchange = renderChatList;
   document.getElementById('archiveChatBtn').onclick = toggleCodexArchive;
   document.getElementById('refreshSessionsBtn').onclick = () => { refreshCodexSessions(); if (typeof refreshClaudeSessions === 'function') refreshClaudeSessions(); };
   document.getElementById('archivedSessions').onchange = () => { codexListVersion++; refreshCodexSessions(); if (typeof refreshClaudeSessions === 'function') refreshClaudeSessions(); };
