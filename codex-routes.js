@@ -38,6 +38,9 @@ export function presentItems(turns = []) {
 export function isReadOnlyCommand(command = '') {
   const text = String(command).trim().toLowerCase();
   if (!text) return false;
+  const spreadsheetRead = /\b(?:openpyxl|pandas|read_excel|read_csv|load_workbook)\b/.test(text)
+    && !/\b(?:save|to_excel|to_csv|write|append|remove|delete|unlink|mkdir|makedirs)\b/.test(text);
+  if (spreadsheetRead && !/[|;&<>`]/.test(text)) return true;
   if (/[|;&<>`]|$\(|\b(?:tee|xargs|python|python3|node|powershell|pwsh|cmd|sh|bash|zsh)\b/.test(text)) return false;
   if (/\b(insert|update|delete|merge|upsert|create|alter|drop|truncate|grant|revoke|write|append|move|copy|rename|remove|rm|del|set-content|out-file|add-content|git\s+(add|commit|push|reset|checkout|restore)|npm\s+(install|uninstall)|pip\s+install)\b/.test(text)) return false;
   if (/\b(select|explain|describe|desc|show)\b/.test(text) && /\b(sql|psql|mysql|sqlite|query|database|db)\b/.test(text)) return true;
