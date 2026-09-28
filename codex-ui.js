@@ -3,6 +3,7 @@ const codexVoiceClips = new Map();
 const CODEX_APPROVAL_MODES_KEY = 'persian-codex-approval-modes-v1';
 let codexApprovalModes = {};
 try { codexApprovalModes = JSON.parse(localStorage.getItem(CODEX_APPROVAL_MODES_KEY) || '{}'); } catch { codexApprovalModes = {}; }
+const codexApprovalSyncing = new Set();
 let codexRefreshing = false;
 const codexThreadRefreshes = new Set();
 let codexRequestSignature = '';
@@ -19,6 +20,17 @@ function syncCodexApprovalMode() {
   const visible = chat?.source === 'codex';
   label.hidden = !visible;
   if (visible) select.value = codexApprovalModes[chat.threadId] || 'ask';
+}
+async function ensureCodexApprovalMode(chat) {
+  if (!chat || chat.source !== 'codex' || !chat.threadId || codexApprovalSyncing.has(chat.threadId)) return;
+  const desired = codexApprovalModes[chat.threadId];
+  if (!desired) return;
+  codexApprovalSyncing.add(chat.threadId);
+  try {
+    const current = await codexApi(`/threads/${encodeURIComponent(chat.threadId)}/approval-mode`);
+    if (current.mode !== desired) await projectApi(chat, `/threads/${encodeURIComponent(chat.threadId)}/approval-mode`, { mode: desired });
+  } catch { /* Older servers keep the manual mode; sending remains safe. */ }
+  finally { codexApprovalSyncing.delete(chat.threadId); }
 }
 async function changeCodexApprovalMode(mode) {
   const chat = getActiveChat();
@@ -129,6 +141,7 @@ async function refreshCodexThread(chatId) {
   if (!chat || codexThreadRefreshes.has(chatId)) return;
   codexThreadRefreshes.add(chatId);
   try {
+    ensureCodexApprovalMode(chat);
     const data = await projectApi(chat, '/threads/' + encodeURIComponent(chat.threadId));
     for (const clip of codexVoiceClips.values()) {
       if (clip.threadId !== chat.threadId) continue;
@@ -152,7 +165,7 @@ async function refreshCodexThread(chatId) {
     chat.statusLog = data.activity.map(item => ({ at: data.updatedAt, type: item.status === 'failed' ? 'error' : 'info', text: `${item.text || ''}\n${item.output || ''}`.trim() }));
     if (data.error) {
       chat.statusLog.push({ at: nowIso(), type: 'error', text: data.error });
-      if (sendingChatIds.has(chatId)) pausedQueues.add(chatId);
+      if (sendingChatIds.has(chatId) && !chat.stopRequested) pausedQueues.add(chatId);
     }
     if (data.usage?.total) {
       chat.usageSummary.total_input_tokens = data.usage.total.inputTokens || 0;
@@ -160,7 +173,13 @@ async function refreshCodexThread(chatId) {
     }
     if (!data.running && !chat.submitting && sendingChatIds.has(chatId) && chatId !== activeChatId) chat.unreadReply = true;
     if (data.running) sendingChatIds.add(chatId);
-    else if (!chat.submitting) sendingChatIds.delete(chatId);
+    else if (!chat.submitting) {
+      sendingChatIds.delete(chatId);
+      if (chat.stopRequested) {
+        chat.stopRequested = false;
+        pausedQueues.delete(chatId);
+      }
+    }
     chat.lastRunning = Boolean(data.running);
     if (chatId === activeChatId) {
       const wasNearBottom = chatLog.scrollHeight - chatLog.scrollTop - chatLog.clientHeight < 100;
@@ -282,9 +301,22 @@ function setupCodexSessions() {
   document.getElementById('archivedSessions').onchange = () => { codexListVersion++; refreshCodexSessions(); if (typeof refreshClaudeSessions === 'function') refreshClaudeSessions(); };
   document.getElementById('stopCodexBtn').onclick = async () => {
     const chat = getActiveChat();
-    pausedQueues.add(chat.id);
+    if (!chat || !isProjectChat(chat)) return;
+    chat.stopRequested = true;
+    pausedQueues.delete(chat.id);
+    persistMessageQueues();
     renderMessageQueue();
-    try { await projectApi(chat, `/threads/${encodeURIComponent(chat.threadId)}/interrupt`, {}); await refreshCodexThread(chat.id); }
+    try {
+      await projectApi(chat, `/threads/${encodeURIComponent(chat.threadId)}/interrupt`, {});
+      // The interrupt acknowledgement can arrive before the app-server emits
+      // turn/completion. Keep polling until the turn is really free so the
+      // next queued message starts immediately after stop.
+      for (let attempt = 0; attempt < 24; attempt += 1) {
+        await refreshCodexThread(chat.id);
+        if (!sendingChatIds.has(chat.id) && !chat.submitting && chat.lastRunning === false) break;
+        await new Promise(resolve => setTimeout(resolve, 250));
+      }
+    }
     catch (error) { showToast(error.message); }
   };
   const previous = localStorage.getItem('persian-chat-active-session');

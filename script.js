@@ -28,6 +28,23 @@ let sendingChatIds = new Set();
 const openAIControllers = new Map();
 const messageQueues = new Map();
 const pausedQueues = new Set();
+const QUEUE_STORAGE_KEY = 'persian-chat-message-queues-v1';
+function persistMessageQueues() {
+  try {
+    const data = [...messageQueues].map(([chatId, jobs]) => [chatId, jobs.map(job => ({
+      chatId: job.chatId, typedText: job.typedText || '', model: job.model || '', failed: Boolean(job.failed),
+      attachments: (job.attachments || []).map(({ id, originalName, mimeType, size }) => ({ id, originalName, mimeType, size })),
+    }))]);
+    sessionStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify({ data, paused: [...pausedQueues] }));
+  } catch {}
+}
+function restoreMessageQueues() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(QUEUE_STORAGE_KEY) || '{}');
+    for (const [chatId, jobs] of saved.data || []) if (Array.isArray(jobs) && jobs.length) messageQueues.set(chatId, jobs);
+    for (const chatId of saved.paused || []) pausedQueues.add(chatId);
+  } catch {}
+}
 function renderMessageQueue() {
   renderActiveChats();
   const panel = document.getElementById('messageQueue');
@@ -37,7 +54,7 @@ function renderMessageQueue() {
   if (pausedQueues.has(activeChatId)) {
     const resume = document.createElement('button');
     resume.type = 'button'; resume.textContent = 'ادامهٔ صف';
-    resume.onclick = () => { pausedQueues.delete(activeChatId); drainMessageQueue(activeChatId); };
+    resume.onclick = () => { pausedQueues.delete(activeChatId); persistMessageQueues(); drainMessageQueue(activeChatId); };
     panel.append(resume);
   }
   queue.forEach((job, index) => {
@@ -46,7 +63,7 @@ function renderMessageQueue() {
     label.textContent = `${index + 1}. ${job.typedText || job.voice?.transcript || 'فایل ضمیمه'}${job.failed ? ' — ارسال ناموفق؛ صف متوقف است' : ' — در صف'}`;
     const cancel = document.createElement('button');
     cancel.type = 'button'; cancel.textContent = 'لغو';
-    cancel.onclick = () => { queue.splice(queue.indexOf(job), 1); renderMessageQueue(); };
+    cancel.onclick = () => { queue.splice(queue.indexOf(job), 1); persistMessageQueues(); renderMessageQueue(); };
     row.append(label, cancel); panel.append(row);
   });
 }
@@ -56,6 +73,7 @@ function drainMessageQueue(chatId) {
   if (!chat || chat.submitting || chat.archiving || chat.deleting) return;
   const job = messageQueues.get(chatId)?.shift();
   if (!job) return;
+  persistMessageQueues();
   renderMessageQueue();
   if (isProjectChat(chat)) sendCodexMessage(job);
   else sendMessage(job);
@@ -64,7 +82,7 @@ function requeueMessage(job) {
   job.failed = true;
   const queue = messageQueues.get(job.chatId) || [];
   queue.unshift(job); messageQueues.set(job.chatId, queue);
-  pausedQueues.add(job.chatId); renderMessageQueue();
+  pausedQueues.add(job.chatId); persistMessageQueues(); renderMessageQueue();
 }
 function submitComposerMessage() {
   if (voiceSession) return;
@@ -77,6 +95,7 @@ function submitComposerMessage() {
   const job = { chatId: chat.id, typedText, voice, attachments: [...pendingAttachments], model: chat.model || '' };
   const queue = messageQueues.get(chat.id) || [];
   queue.push(job); messageQueues.set(chat.id, queue);
+  persistMessageQueues();
   messageInput.value = ''; pendingAttachments = []; voiceDrafts.delete(chat.id);
   renderAttachments(); renderVoiceDraft(); updateCounter(); renderMessageQueue();
   drainMessageQueue(chat.id);
@@ -836,6 +855,7 @@ consoleDialog.addEventListener('click', event => {
   const bounds = consoleDialog.getBoundingClientRect();
   if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) consoleDialog.close();
 });
+restoreMessageQueues();
 setupVoiceInput();
 renderApp();
 setupCodexSessions();

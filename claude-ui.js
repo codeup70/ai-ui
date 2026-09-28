@@ -57,6 +57,8 @@ function setupClaudeSessions() {
   document.getElementById('newClaudeForm').onsubmit = async event => {
     event.preventDefault();
     const button = document.getElementById('createClaudeBtn'); button.disabled = true;
+    button.textContent = 'در حال ساخت…';
+    document.getElementById('claudeCreateError').textContent = '';
     try {
       const source = document.getElementById('newChatProvider').value;
       const { thread } = await codexApi('/threads', { cwd: document.getElementById('claudeCwd').value.trim() }, source);

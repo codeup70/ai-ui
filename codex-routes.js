@@ -38,6 +38,7 @@ export function presentItems(turns = []) {
 export function isReadOnlyCommand(command = '') {
   const text = String(command).trim().toLowerCase();
   if (!text) return false;
+  if (/[|;&<>`]|$\(|\b(?:tee|xargs|python|python3|node|powershell|pwsh|cmd|sh|bash|zsh)\b/.test(text)) return false;
   if (/\b(insert|update|delete|merge|upsert|create|alter|drop|truncate|grant|revoke|write|append|move|copy|rename|remove|rm|del|set-content|out-file|add-content|git\s+(add|commit|push|reset|checkout|restore)|npm\s+(install|uninstall)|pip\s+install)\b/.test(text)) return false;
   if (/\b(select|explain|describe|desc|show)\b/.test(text) && /\b(sql|psql|mysql|sqlite|query|database|db)\b/.test(text)) return true;
   if (/\b(?:xlsx?|csv|spreadsheet|excel|sheet|openpyxl|pandas|read_excel|read_csv)\b/.test(text)) return true;
@@ -63,6 +64,7 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
   const approvalModes = new Map();
   const approvalActivity = new Map();
   const validApprovalModes = new Set(['ask', 'auto-accept', 'auto-decline']);
+  const nativeApprovalApplied = new Map();
   const nativeApprovalSettings = mode => mode === 'auto-accept'
     ? { approvalPolicy: 'on-request', sandboxPolicy: { type: 'readOnly', networkAccess: false } }
     : { approvalPolicy: 'on-request' };
@@ -74,7 +76,7 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
       || request.method === 'item/permissions/requestApproval' && isReadOnlyPermissionRequest(request)
     )) return null;
     if (request.method === 'item/permissions/requestApproval') {
-      return { permissions: accept ? request.params.permissions : {}, scope: 'turn' };
+      return { permissions: accept ? (request.params.permissions || request.params.additionalPermissions || {}) : {}, scope: 'turn' };
     }
     return { decision: accept ? 'accept' : 'decline' };
   };
@@ -163,9 +165,16 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
   router.post('/threads/:id/approval-mode', handle(async (req, res) => {
     const mode = req.body.mode;
     if (!validApprovalModes.has(mode)) throw new Error('حالت اجازه نامعتبر است.');
-    await client.request('thread/settings/update', { threadId: req.params.id, ...nativeApprovalSettings(mode) });
+    let nativeApplied = true;
+    try {
+      await client.request('thread/settings/update', { threadId: req.params.id, ...nativeApprovalSettings(mode) });
+    } catch (error) {
+      if (!/method not found|unknown method|not supported|unsupported/i.test(error.message)) throw error;
+      nativeApplied = false;
+    }
     approvalModes.set(req.params.id, mode);
-    res.json({ mode });
+    nativeApprovalApplied.set(req.params.id, nativeApplied);
+    res.json({ mode, nativeApplied });
   }));
   router.post('/threads', handle(async (req, res) => {
     const cwd = await resolveChatWorkspace(req.body.cwd);
@@ -266,6 +275,8 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
       await client.request('thread/delete', { threadId: id });
       freshThreads.delete(id);
       approvalActivity.delete(id);
+      approvalModes.delete(id);
+      nativeApprovalApplied.delete(id);
       archived.delete(id);
       live.delete(id);
       errors.delete(id);
