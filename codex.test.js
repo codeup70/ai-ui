@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import express from 'express';
-import { installCodexRoutes, presentItems } from './codex-routes.js';
+import { installCodexRoutes, isReadOnlyCommand, isReadOnlyPermissionRequest, presentItems } from './codex-routes.js';
 
 class FakeClient extends EventEmitter {
   requests = new Map(); calls = []; responses = [];
@@ -77,6 +77,29 @@ test('approval requires an explicit scoped decision; cross-origin execution is b
   assert.deepEqual(client.responses[0].result, { decision: 'decline' });
   assert.equal((await post('/threads/thread-original/turns', { text: 'run' }, { Origin: 'https://example.com' })).status, 403);
   assert.equal(client.calls.length, 0);
+});
+test('approval mode can auto-accept or auto-decline tool approvals while questions remain manual', async t => {
+  const { client, post } = await server(t);
+  assert.equal((await post('/threads/thread-original/approval-mode', { mode: 'auto-accept' })).status, 200);
+  client.requests.set('8', { id: 8, method: 'item/commandExecution/requestApproval', params: { threadId: 'thread-original', command: 'git status' } });
+  client.emit('request', client.requests.get('8'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(client.responses.at(-1).result, { decision: 'accept' });
+  assert.equal((await post('/threads/thread-original/approval-mode', { mode: 'auto-decline' })).status, 200);
+  client.requests.set('9', { id: 9, method: 'item/tool/requestUserInput', params: { threadId: 'thread-original', questions: [] } });
+  client.emit('request', client.requests.get('9'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(client.responses.some(item => item.id === 9), false);
+  assert.equal(isReadOnlyCommand('git status'), true);
+  assert.equal(isReadOnlyCommand('psql -c "SELECT * FROM users"'), true);
+  assert.equal(isReadOnlyCommand('psql -c "UPDATE users SET name = \'x\'"'), false);
+  assert.equal(isReadOnlyPermissionRequest({ params: { permissions: { fileSystem: { read: ['report.xlsx'] } } } }), true);
+  assert.equal(isReadOnlyPermissionRequest({ params: { permissions: { fileSystem: { write: ['report.xlsx'] } } } }), false);
+  client.requests.set('10', { id: 10, method: 'item/commandExecution/requestApproval', params: { threadId: 'thread-original', command: 'git commit -am change' } });
+  await post('/threads/thread-original/approval-mode', { mode: 'auto-accept' });
+  client.emit('request', client.requests.get('10'));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(client.responses.some(item => item.id === 10), false);
 });
 test('history presents user/assistant text and tool activity, without reasoning contents', () => {
   const data = presentItems([{ items: [

@@ -510,6 +510,7 @@ function syncComposerState() {
   renderMessageQueue();
   const codex = isProjectChat(getActiveChat());
   if (typeof syncClaudeModel === 'function') syncClaudeModel();
+  if (typeof syncCodexApprovalMode === 'function') syncCodexApprovalMode();
   clearBtn.disabled = codex;
   clearBtn.hidden = codex;
   const archiveBtn = document.getElementById('archiveChatBtn');

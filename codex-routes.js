@@ -35,6 +35,22 @@ export function presentItems(turns = []) {
   return { messages, activity: activity.slice(-40) };
 }
 
+export function isReadOnlyCommand(command = '') {
+  const text = String(command).trim().toLowerCase();
+  if (!text) return false;
+  if (/\b(insert|update|delete|merge|upsert|create|alter|drop|truncate|grant|revoke|write|append|move|copy|rename|remove|rm|del|set-content|out-file|add-content|git\s+(add|commit|push|reset|checkout|restore)|npm\s+(install|uninstall)|pip\s+install)\b/.test(text)) return false;
+  if (/\b(select|explain|describe|desc|show)\b/.test(text) && /\b(sql|psql|mysql|sqlite|query|database|db)\b/.test(text)) return true;
+  if (/\b(?:xlsx?|csv|spreadsheet|excel|sheet|openpyxl|pandas|read_excel|read_csv)\b/.test(text)) return true;
+  return /^(?:["']?)(?:cat|type|get-content|head|tail|less|more|ls|dir|pwd|whoami|find|rg|grep|git\s+(?:status|diff|log|show|branch|remote\s+-v)|sed\s+-n|awk\b|where\b|which\b|command\s+-v)\b/.test(text);
+}
+
+export function isReadOnlyPermissionRequest(request = {}) {
+  const text = JSON.stringify(request.params || '').toLowerCase();
+  if (!text) return false;
+  if (/write|modify|create|delete|remove|network|execute|shell|full.?access/.test(text)) return false;
+  return /read|read.?only|filesystem|file_system|xlsx?|csv|spreadsheet|excel|sheet|openpyxl|read_excel|read_csv/.test(text);
+}
+
 export function installCodexRoutes(app, { client = new CodexClient(), attachmentInput = async () => [] } = {}) {
   const router = express.Router();
   const running = new Map();
@@ -44,6 +60,24 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
   const usage = new Map();
   const archived = new Set();
   const freshThreads = new Map();
+  const approvalModes = new Map();
+  const approvalActivity = new Map();
+  const validApprovalModes = new Set(['ask', 'auto-accept', 'auto-decline']);
+  const nativeApprovalSettings = mode => mode === 'auto-accept'
+    ? { approvalPolicy: 'on-request', sandboxPolicy: { type: 'readOnly', networkAccess: false } }
+    : { approvalPolicy: 'on-request' };
+  const approvalResponse = (request, mode) => {
+    if (request.method === 'item/tool/requestUserInput') return null;
+    const accept = mode === 'auto-accept';
+    if (accept && !(
+      request.method === 'item/commandExecution/requestApproval' && isReadOnlyCommand(request.params.command)
+      || request.method === 'item/permissions/requestApproval' && isReadOnlyPermissionRequest(request)
+    )) return null;
+    if (request.method === 'item/permissions/requestApproval') {
+      return { permissions: accept ? request.params.permissions : {}, scope: 'turn' };
+    }
+    return { decision: accept ? 'accept' : 'decline' };
+  };
   client.on('notification', ({ method, params: p = {} }) => {
     if (method === 'turn/started') { running.set(p.threadId, p.turn.id); errors.delete(p.threadId); live.set(p.threadId, new Map()); }
     if (method === 'turn/completed') {
@@ -74,6 +108,19 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
       client.write({ id: request.id, error: { code: -32601, message: 'This client does not support ' + request.method } });
       client.requests.delete(String(request.id));
       errors.set(request.params?.threadId, 'این ابزار در رابط وب پشتیبانی نمی‌شود: ' + request.method);
+      return;
+    }
+    const mode = approvalModes.get(request.params?.threadId) || 'ask';
+    const result = approvalResponse(request, mode);
+    if (result) {
+      const list = approvalActivity.get(request.params?.threadId) || [];
+      list.push({ id: `approval-${request.id}`, text: `خواندن خودکار: ${request.params.command || request.method}`, status: 'approved', output: '' });
+      approvalActivity.set(request.params?.threadId, list.slice(-20));
+      // Resolve automatic approvals after the request has been registered by the client.
+      queueMicrotask(() => {
+        try { client.respond(request.id, result); }
+        catch (error) { errors.set(request.params?.threadId, error.message); }
+      });
     }
   });
   router.use((req, res, next) => {
@@ -110,6 +157,16 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
     } while (cursor);
     res.json({ models });
   }));
+  router.get('/threads/:id/approval-mode', handle(async (req, res) => {
+    res.json({ mode: approvalModes.get(req.params.id) || 'ask' });
+  }));
+  router.post('/threads/:id/approval-mode', handle(async (req, res) => {
+    const mode = req.body.mode;
+    if (!validApprovalModes.has(mode)) throw new Error('حالت اجازه نامعتبر است.');
+    await client.request('thread/settings/update', { threadId: req.params.id, ...nativeApprovalSettings(mode) });
+    approvalModes.set(req.params.id, mode);
+    res.json({ mode });
+  }));
   router.post('/threads', handle(async (req, res) => {
     const cwd = await resolveChatWorkspace(req.body.cwd);
     const { thread } = await client.request('thread/start', { cwd: path.resolve(cwd) });
@@ -140,7 +197,9 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
       questions: r.params.questions || [],
       changes: live.get(thread.id)?.get(r.params.itemId)?.changes || [],
     }));
-    res.json({ ...summarizeThread(thread), ...presentItems(turns), running: running.has(thread.id),
+    const presented = presentItems(turns);
+    presented.activity = [...presented.activity, ...(approvalActivity.get(thread.id) || [])].slice(-40);
+    res.json({ ...summarizeThread(thread), ...presented, running: running.has(thread.id),
       turnId: running.get(thread.id), requests, error: errors.get(thread.id) || null, usage: usage.get(thread.id) || null });
   }));
   router.post('/threads/:id/turns', handle(async (req, res) => {
@@ -206,6 +265,7 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
       if (thread.status?.type === 'active') throw new Error('سشن در حال اجرا را نمی‌توان حذف کرد.');
       await client.request('thread/delete', { threadId: id });
       freshThreads.delete(id);
+      approvalActivity.delete(id);
       archived.delete(id);
       live.delete(id);
       errors.delete(id);

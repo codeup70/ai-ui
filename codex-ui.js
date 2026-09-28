@@ -1,5 +1,8 @@
 const codexChats = [];
 const codexVoiceClips = new Map();
+const CODEX_APPROVAL_MODES_KEY = 'persian-codex-approval-modes-v1';
+let codexApprovalModes = {};
+try { codexApprovalModes = JSON.parse(localStorage.getItem(CODEX_APPROVAL_MODES_KEY) || '{}'); } catch { codexApprovalModes = {}; }
 let codexRefreshing = false;
 const codexThreadRefreshes = new Set();
 let codexRequestSignature = '';
@@ -8,6 +11,28 @@ let codexListVersion = 0;
 function isProjectChat(chat) { return chat?.source === 'codex' || chat?.source === 'claude'; }
 function agentName(chat) { return chat?.source === 'claude' ? 'Claude' : 'Codex'; }
 function projectApi(chat, url, body) { return codexApi(url, body, chat.source); }
+function syncCodexApprovalMode() {
+  const chat = getActiveChat();
+  const label = document.getElementById('codexApprovalLabel');
+  const select = document.getElementById('codexApprovalMode');
+  if (!label || !select) return;
+  const visible = chat?.source === 'codex';
+  label.hidden = !visible;
+  if (visible) select.value = codexApprovalModes[chat.threadId] || 'ask';
+}
+async function changeCodexApprovalMode(mode) {
+  const chat = getActiveChat();
+  if (!chat || chat.source !== 'codex') return;
+  try {
+    await projectApi(chat, `/threads/${encodeURIComponent(chat.threadId)}/approval-mode`, { mode });
+    codexApprovalModes[chat.threadId] = mode;
+    localStorage.setItem(CODEX_APPROVAL_MODES_KEY, JSON.stringify(codexApprovalModes));
+    showToast(mode === 'auto-accept' ? 'خواندن خودکار شد؛ تغییرات هنوز اجازه می‌خواهند.' : mode === 'auto-decline' ? 'رد خودکار فعال شد.' : 'برای هر درخواست اجازه می‌پرسد.');
+  } catch (error) {
+    syncCodexApprovalMode();
+    showToast(error.message);
+  }
+}
 async function codexApi(url, body, source = 'codex') {
   const response = await fetch('/api/' + source + url, body === undefined ? {} : {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -251,6 +276,7 @@ async function sendCodexMessage(job) {
 }
 function setupCodexSessions() {
   document.getElementById('activeSessions').onchange = renderChatList;
+  document.getElementById('codexApprovalMode').onchange = event => changeCodexApprovalMode(event.target.value);
   document.getElementById('archiveChatBtn').onclick = toggleCodexArchive;
   document.getElementById('refreshSessionsBtn').onclick = () => { refreshCodexSessions(); if (typeof refreshClaudeSessions === 'function') refreshClaudeSessions(); };
   document.getElementById('archivedSessions').onchange = () => { codexListVersion++; refreshCodexSessions(); if (typeof refreshClaudeSessions === 'function') refreshClaudeSessions(); };
