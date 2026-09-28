@@ -38,7 +38,7 @@ export function presentItems(turns = []) {
 export function isReadOnlyCommand(command = '') {
   const text = String(command).trim().toLowerCase();
   if (!text) return false;
-  const spreadsheetRead = /\b(?:openpyxl|pandas|read_excel|read_csv|load_workbook)\b/.test(text)
+  const spreadsheetRead = /\b(?:openpyxl|pandas|read_excel|read_csv|load_workbook|xlsx2csv|csvkit|excel|spreadsheet|workbook)\b/.test(text)
     && !/\b(?:save|to_excel|to_csv|write|append|remove|delete|unlink|mkdir|makedirs)\b/.test(text);
   if (spreadsheetRead && !/[|;&<>`]/.test(text)) return true;
   if (/[|;&<>`]|$\(|\b(?:tee|xargs|python|python3|node|powershell|pwsh|cmd|sh|bash|zsh)\b/.test(text)) return false;
@@ -49,7 +49,8 @@ export function isReadOnlyCommand(command = '') {
 }
 
 export function isReadOnlyPermissionRequest(request = {}) {
-  const text = JSON.stringify(request.params || '').toLowerCase();
+  const text = JSON.stringify(request.params || '').toLowerCase()
+    .replace(/"?network(?:access|_access)?"?\s*:\s*(?:false|0|"false")/g, '');
   if (!text) return false;
   if (/write|modify|create|delete|remove|network|execute|shell|full.?access/.test(text)) return false;
   return /read|read.?only|filesystem|file_system|xlsx?|csv|spreadsheet|excel|sheet|openpyxl|read_excel|read_csv/.test(text);
@@ -69,7 +70,10 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
   const validApprovalModes = new Set(['ask', 'auto-accept', 'auto-decline']);
   const nativeApprovalApplied = new Map();
   const nativeApprovalSettings = mode => mode === 'auto-accept'
-    ? { approvalPolicy: 'on-request', sandboxPolicy: { type: 'readOnly', networkAccess: false } }
+    // Match the CLI's normal automatic mode: trusted/read-only work runs
+    // without a prompt, while untrusted commands and writes still request
+    // approval. Keep the workspace sandbox and network disabled.
+    ? { approvalPolicy: 'untrusted', sandboxPolicy: { type: 'workspaceWrite', networkAccess: false } }
     : { approvalPolicy: 'on-request' };
   const approvalResponse = (request, mode) => {
     if (request.method === 'item/tool/requestUserInput') return null;

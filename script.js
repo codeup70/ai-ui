@@ -32,7 +32,7 @@ const QUEUE_STORAGE_KEY = 'persian-chat-message-queues-v1';
 function persistMessageQueues() {
   try {
     const data = [...messageQueues].map(([chatId, jobs]) => [chatId, jobs.map(job => ({
-      chatId: job.chatId, typedText: job.typedText || '', model: job.model || '', failed: Boolean(job.failed),
+      chatId: job.chatId, typedText: job.typedText || '', model: job.model || '', failed: Boolean(job.failed), errorText: job.errorText || '',
       attachments: (job.attachments || []).map(({ id, originalName, mimeType, size }) => ({ id, originalName, mimeType, size })),
     }))]);
     sessionStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify({ data, paused: [...pausedQueues] }));
@@ -60,7 +60,7 @@ function renderMessageQueue() {
   queue.forEach((job, index) => {
     const row = document.createElement('div');
     const label = document.createElement('span');
-    label.textContent = `${index + 1}. ${job.typedText || job.voice?.transcript || 'فایل ضمیمه'}${job.failed ? ' — ارسال ناموفق؛ صف متوقف است' : ' — در صف'}`;
+    label.textContent = `${index + 1}. ${job.typedText || job.voice?.transcript || 'فایل ضمیمه'}${job.failed ? ` — ${job.errorText || 'ارسال ناموفق؛ صف متوقف است'}` : ' — در صف'}`;
     const cancel = document.createElement('button');
     cancel.type = 'button'; cancel.textContent = 'لغو';
     cancel.onclick = () => { queue.splice(queue.indexOf(job), 1); persistMessageQueues(); renderMessageQueue(); };

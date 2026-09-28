@@ -118,7 +118,7 @@ export function installClaudeRoutes(app, { client = new ClaudeClient(), attachme
           if (options.signal.aborted || state.controller.signal.aborted) return abort();
           options.signal.addEventListener('abort', abort, { once: true });
           const mode = approvalModes.get(id) || 'ask';
-          if (mode === 'auto-decline' || mode === 'auto-accept' && isReadOnlyTool(name, input)) {
+          if (!questions.length && (mode === 'auto-decline' || mode === 'auto-accept' && isReadOnlyTool(name, input))) {
             options.signal.removeEventListener('abort', abort);
             return resolve(mode === 'auto-accept' ? { behavior: 'allow', updatedInput: input } : { behavior: 'deny', message: 'اجازهٔ خودکار رد شد.' });
           }

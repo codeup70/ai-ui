@@ -282,7 +282,12 @@ async function sendCodexMessage(job) {
     await refreshCodexThread(chat.id);
   } catch (error) {
     sendingChatIds.delete(chat.id);
-    if (job) requeueMessage(job);
+    if (job) {
+      if (/already|active|running|in use|locked|مشغول|در حال اجرا|قفل/i.test(error.message || '')) {
+        job.errorText = 'این گفتگو در ترمینال دیگری باز است؛ پس از پایان آن دوباره ادامه بده.';
+      }
+      requeueMessage(job);
+    }
     showToast(error.message);
   } finally {
     chat.submitting = false;
