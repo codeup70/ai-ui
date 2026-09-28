@@ -43,6 +43,7 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
   const errors = new Map();
   const usage = new Map();
   const archived = new Set();
+  const freshThreads = new Map();
   client.on('notification', ({ method, params: p = {} }) => {
     if (method === 'turn/started') { running.set(p.threadId, p.turn.id); errors.delete(p.threadId); live.set(p.threadId, new Map()); }
     if (method === 'turn/completed') {
@@ -112,10 +113,19 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
   router.post('/threads', handle(async (req, res) => {
     const cwd = await resolveChatWorkspace(req.body.cwd);
     const { thread } = await client.request('thread/start', { cwd: path.resolve(cwd) });
+    freshThreads.set(thread.id, thread);
     res.json({ thread: summarizeThread(thread) });
   }));
   router.get('/threads/:id', handle(async (req, res) => {
-    const { thread } = await client.request('thread/read', { threadId: req.params.id, includeTurns: true });
+    let thread;
+    try {
+      ({ thread } = await client.request('thread/read', { threadId: req.params.id, includeTurns: true }));
+      if (thread.turns?.length) freshThreads.delete(req.params.id);
+    } catch (error) {
+      // A newly started thread may not have a persisted turn history yet.
+      if (!freshThreads.has(req.params.id) || !/list_turns is not supported yet|not found|no rollout/i.test(error.message)) throw error;
+      thread = { ...freshThreads.get(req.params.id), turns: [] };
+    }
     const turns = thread.turns || [];
     const items = live.get(thread.id);
     if (items?.size) {
@@ -149,9 +159,14 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
         await client.request('thread/unarchive', { threadId: id });
         archived.delete(id);
       }
-      const stored = await client.request('thread/read', { threadId: id, includeTurns: false });
-      const { thread } = await client.request('thread/resume', { threadId: id, cwd: stored.thread.cwd });
-      if (thread.status?.type === 'active') throw new Error('این سشن در حال اجراست؛ صبر کن تا کار فعلی تمام شود.');
+      let thread = freshThreads.get(id);
+      if (!thread) {
+        const stored = await client.request('thread/read', { threadId: id, includeTurns: false });
+        ({ thread } = await client.request('thread/resume', { threadId: id, cwd: stored.thread.cwd }));
+      }
+      // After a server restart, the persisted thread status can remain "active"
+      // even though this app-server has no running turn. The in-memory running
+      // guard above and turn/start response are authoritative for this process.
       const input = [...(text ? [{ type: 'text', text }] : []), ...extra];
       const model = req.body.model;
       if (model && (typeof model !== 'string' || model.length > 200)) throw new Error('مدل نامعتبر است.');
@@ -190,6 +205,7 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
       const { thread } = await client.request('thread/read', { threadId: id, includeTurns: false });
       if (thread.status?.type === 'active') throw new Error('سشن در حال اجرا را نمی‌توان حذف کرد.');
       await client.request('thread/delete', { threadId: id });
+      freshThreads.delete(id);
       archived.delete(id);
       live.delete(id);
       errors.delete(id);

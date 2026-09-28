@@ -6,12 +6,17 @@ import { installCodexRoutes, presentItems } from './codex-routes.js';
 
 class FakeClient extends EventEmitter {
   requests = new Map(); calls = []; responses = [];
+  emptyHistory = false;
   async connect() {}
   async request(method, params) {
     this.calls.push({ method, params });
     const thread = { id: 'thread-original', cwd: 'D:\\Project\\original', name: 'Original', createdAt: 1, updatedAt: 2,
       status: { type: 'idle' }, turns: [{ items: [{ type: 'userMessage', id: 'u', content: [{ type: 'text', text: '<script>history</script>' }] }] }] };
     if (method === 'thread/list') return { data: [thread], nextCursor: 'page2' };
+    if (method === 'thread/start') return { thread: { ...thread, id: 'thread-new', cwd: params.cwd, turns: [] } };
+    if (method === 'thread/read' && this.emptyHistory && params.threadId === 'thread-new' && params.includeTurns) {
+      throw new Error('list_turns is not supported yet');
+    }
     if (method === 'thread/read' || method === 'thread/resume') return { thread };
     if (method === 'turn/start') {
       this.emit('notification', { method: 'turn/started', params: { threadId: thread.id, turn: { id: 'turn-1' } } });
@@ -32,6 +37,19 @@ async function server(t) {
   const post = (route, body, headers = {}) => fetch(url + route, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
   return { client, url, post };
 }
+test('new Codex thread opens before history exists and sends without resuming an unpersisted thread', async t => {
+  const { client, url, post } = await server(t);
+  client.emptyHistory = true;
+  const created = await post('/threads', { cwd: process.cwd() });
+  assert.equal(created.status, 200);
+  const { thread } = await created.json();
+  const history = await fetch(url + '/threads/' + thread.id);
+  assert.equal(history.status, 200);
+  assert.deepEqual((await history.json()).messages, []);
+  assert.equal((await post('/threads/' + thread.id + '/turns', { text: 'hello' })).status, 200);
+  assert.equal(client.calls.some(c => c.method === 'thread/resume'), false);
+});
+
 test('list/history do not resume; pagination and original project are retained', async t => {
   const { client, url } = await server(t);
   const list = await (await fetch(url + '/threads?cursor=page1&archived=true')).json();

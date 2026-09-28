@@ -136,6 +136,7 @@ async function refreshCodexThread(chatId) {
     if (!data.running && !chat.submitting && sendingChatIds.has(chatId) && chatId !== activeChatId) chat.unreadReply = true;
     if (data.running) sendingChatIds.add(chatId);
     else if (!chat.submitting) sendingChatIds.delete(chatId);
+    chat.lastRunning = Boolean(data.running);
     if (chatId === activeChatId) {
       const wasNearBottom = chatLog.scrollHeight - chatLog.scrollTop - chatLog.clientHeight < 100;
       const scrollTop = chatLog.scrollTop;
@@ -240,10 +241,12 @@ async function sendCodexMessage(job) {
     showToast(error.message);
   } finally {
     chat.submitting = false;
+    if (chat.lastRunning === false) sendingChatIds.delete(chat.id);
     syncComposerState();
     renderAttachments();
     renderVoiceDraft();
     updateCounter();
+    drainMessageQueue(chat.id);
   }
 }
 function setupCodexSessions() {
