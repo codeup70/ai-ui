@@ -26,7 +26,11 @@ function summary(info) {
 }
 export function installClaudeRoutes(app, { client = new ClaudeClient(), attachmentInput = async () => [],
   stateFile = path.resolve('.claude-ui-state.json') } = {}) {
-  const router = express.Router(), states = new Map(), drafts = new Map();
+  const router = express.Router(), states = new Map(), drafts = new Map(), approvalModes = new Map();
+  const isReadOnlyTool = (name = '', input = {}) => {
+    if (!['read', 'glob', 'grep', 'ls'].includes(String(name).toLowerCase())) return false;
+    return !/write|edit|modify|create|delete|remove|move|copy|bash|shell|command|network/.test(JSON.stringify(input).toLowerCase());
+  };
   let archiveIds = new Set();
   const archiveReady = fs.readFile(stateFile, 'utf8').then(raw => { archiveIds = new Set(JSON.parse(raw).archived || []); }).catch(error => {
     if (error.code !== 'ENOENT') throw new Error('خواندن وضعیت آرشیو Claude ناموفق بود.');
@@ -83,6 +87,14 @@ export function installClaudeRoutes(app, { client = new ClaudeClient(), attachme
     res.json({ ...summary(info), ...data, running: Boolean(state?.running), error: state?.error,
       model: state?.model, usage: state?.usage, requests: [...(state?.requests?.values() || [])].map(r => r.public) });
   }));
+  router.get('/threads/:id/approval-mode', handle(async (req, res) => {
+    res.json({ mode: approvalModes.get(req.params.id) || 'ask' });
+  }));
+  router.post('/threads/:id/approval-mode', handle(async (req, res) => {
+    if (!['ask', 'auto-accept', 'auto-decline'].includes(req.body.mode)) throw new Error('حالت اجازه نامعتبر است.');
+    approvalModes.set(req.params.id, req.body.mode);
+    res.json({ mode: req.body.mode });
+  }));
   router.post('/threads/:id/turns', handle(async (req, res) => {
     const id = req.params.id, info = await getInfo(id);
     if (states.get(id)?.running) return res.status(409).json({ error: 'این سشن هنوز در حال کار است.' });
@@ -105,6 +117,11 @@ export function installClaudeRoutes(app, { client = new ClaudeClient(), attachme
           const abort = () => done({ behavior: 'deny', message: 'درخواست متوقف شد.' });
           if (options.signal.aborted || state.controller.signal.aborted) return abort();
           options.signal.addEventListener('abort', abort, { once: true });
+          const mode = approvalModes.get(id) || 'ask';
+          if (mode === 'auto-decline' || mode === 'auto-accept' && isReadOnlyTool(name, input)) {
+            options.signal.removeEventListener('abort', abort);
+            return resolve(mode === 'auto-accept' ? { behavior: 'allow', updatedInput: input } : { behavior: 'deny', message: 'اجازهٔ خودکار رد شد.' });
+          }
           state.requests.set(requestId, { input, done, public: { id: requestId,
             method: questions.length ? 'item/tool/requestUserInput' : 'claude/tool/approval',
             reason: name, command: JSON.stringify(input, null, 2), cwd: info.cwd, questions } });
@@ -164,7 +181,7 @@ export function installClaudeRoutes(app, { client = new ClaudeClient(), attachme
     const info = await getInfo(req.params.id);
     if (req.body.confirmedThreadId !== req.params.id || states.get(req.params.id)?.running) throw new Error('تأیید حذف لازم است؛ سشن فعال قابل حذف نیست.');
     if (!drafts.has(req.params.id)) await client.delete(req.params.id, info.cwd);
-    drafts.delete(req.params.id); states.delete(req.params.id); res.json({ ok: true });
+    drafts.delete(req.params.id); states.delete(req.params.id); approvalModes.delete(req.params.id); res.json({ ok: true });
   }));
   app.use('/api/claude', router);
   return { close() { for (const state of states.values()) { state.controller.abort(); state.query?.close(); } client.close(); } };

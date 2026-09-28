@@ -1,6 +1,6 @@
 const codexChats = [];
 const codexVoiceClips = new Map();
-const CODEX_APPROVAL_MODES_KEY = 'persian-codex-approval-modes-v1';
+const CODEX_APPROVAL_MODES_KEY = 'persian-approval-modes-v2';
 let codexApprovalModes = {};
 try { codexApprovalModes = JSON.parse(localStorage.getItem(CODEX_APPROVAL_MODES_KEY) || '{}'); } catch { codexApprovalModes = {}; }
 const codexApprovalSyncing = new Set();
@@ -17,27 +17,28 @@ function syncCodexApprovalMode() {
   const label = document.getElementById('codexApprovalLabel');
   const select = document.getElementById('codexApprovalMode');
   if (!label || !select) return;
-  const visible = chat?.source === 'codex';
+  const visible = isProjectChat(chat);
   label.hidden = !visible;
-  if (visible) select.value = codexApprovalModes[chat.threadId] || 'ask';
+  if (visible) select.value = codexApprovalModes[`${chat.source}:${chat.threadId}`] || 'ask';
 }
 async function ensureCodexApprovalMode(chat) {
-  if (!chat || chat.source !== 'codex' || !chat.threadId || codexApprovalSyncing.has(chat.threadId)) return;
-  const desired = codexApprovalModes[chat.threadId];
+  if (!chat || !isProjectChat(chat) || !chat.threadId || codexApprovalSyncing.has(`${chat.source}:${chat.threadId}`)) return;
+  const key = `${chat.source}:${chat.threadId}`;
+  const desired = codexApprovalModes[key];
   if (!desired) return;
-  codexApprovalSyncing.add(chat.threadId);
+  codexApprovalSyncing.add(key);
   try {
-    const current = await codexApi(`/threads/${encodeURIComponent(chat.threadId)}/approval-mode`);
+    const current = await projectApi(chat, `/threads/${encodeURIComponent(chat.threadId)}/approval-mode`);
     if (current.mode !== desired) await projectApi(chat, `/threads/${encodeURIComponent(chat.threadId)}/approval-mode`, { mode: desired });
   } catch { /* Older servers keep the manual mode; sending remains safe. */ }
-  finally { codexApprovalSyncing.delete(chat.threadId); }
+  finally { codexApprovalSyncing.delete(key); }
 }
 async function changeCodexApprovalMode(mode) {
   const chat = getActiveChat();
-  if (!chat || chat.source !== 'codex') return;
+  if (!chat || !isProjectChat(chat)) return;
   try {
     await projectApi(chat, `/threads/${encodeURIComponent(chat.threadId)}/approval-mode`, { mode });
-    codexApprovalModes[chat.threadId] = mode;
+    codexApprovalModes[`${chat.source}:${chat.threadId}`] = mode;
     localStorage.setItem(CODEX_APPROVAL_MODES_KEY, JSON.stringify(codexApprovalModes));
     showToast(mode === 'auto-accept' ? 'خواندن خودکار شد؛ تغییرات هنوز اجازه می‌خواهند.' : mode === 'auto-decline' ? 'رد خودکار فعال شد.' : 'برای هر درخواست اجازه می‌پرسد.');
   } catch (error) {
