@@ -14,6 +14,6 @@ if not exist "%~dp0node_modules" (
   exit /b 1
 )
 
-start "" "http://localhost:3000"
+start "" "http://localhost:3010"
 cd /d "%~dp0"
 npm start

@@ -30,12 +30,17 @@
 .voice-timer { color: var(--danger); font-variant-numeric: tabular-nums; font-weight: 850; min-width: 5ch; text-align: center; }
 .project-heading { font-size: 0.8rem; color: var(--primary-2); padding: 8px 3px; overflow-wrap: anywhere; }
 .chat-toolbar-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.session-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px; align-items: center; }
+.session-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px; align-items: center; min-width: 0; }
+.session-row > .chat-list-item { min-width: 0; overflow: hidden; }
 .session-row .chat-title { padding-left: 0; }
 .session-delete { color: var(--danger) !important; padding: 6px 8px; font-size: 0.75rem; }
 .chat-delete { opacity: 1 !important; }
 .session-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 0.75rem; }
 .session-controls button { padding: 6px 8px; font-size: inherit; }
+.chat-search { display: block; min-width: 0; }
+.chat-search input { width: 100%; min-width: 0; height: 34px; padding: 7px 11px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--panel-3); color: var(--text); font: inherit; font-size: 0.78rem; box-shadow: inset 0 0 0 1px rgba(6, 182, 212, 0.08); }
+.chat-search input::placeholder { color: var(--soft); opacity: 0.9; }
+.chat-search input:focus { outline: 2px solid var(--primary-2); outline-offset: 1px; }
 #projectPath { overflow-wrap: anywhere; font-size: 0.75rem; }
 .codex-requests { max-height: 240px; overflow-y: auto; }
 .codex-request { padding: 10px; border: 1px solid var(--warning); border-radius: 12px; margin-bottom: 8px; }
@@ -190,8 +195,8 @@ p { color: var(--muted); line-height: 1.85; }
   background: linear-gradient(135deg, rgba(124, 58, 237, 0.20), rgba(6, 182, 212, 0.08));
 }
 
-.chat-title { font-size: 0.98rem; font-weight: 850; padding-left: 44px; }
-.chat-preview, .chat-meta { color: var(--muted); font-size: 0.82rem; line-height: 1.55; }
+.chat-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.98rem; font-weight: 850; padding-left: 44px; }
+.chat-preview, .chat-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 0.82rem; line-height: 1.55; }
 .chat-delete {
   position: absolute;
   left: 10px;
@@ -516,10 +521,19 @@ textarea:disabled { opacity: 0.65; }
 .model-picker[hidden] { display: none; }
 .model-picker:hover { background: var(--panel-3); border-color: var(--primary-2); }
 .model-picker:focus-within { outline: 2px solid var(--primary-2); outline-offset: 2px; }
+.web-search-picker { cursor: pointer; }
+.web-search-picker input { accent-color: var(--primary-2); }
+.approval-picker { border-color: color-mix(in srgb, var(--primary-2) 55%, var(--border-strong)); background: color-mix(in srgb, var(--primary) 8%, var(--panel-2)); }
+.approval-picker > span { color: var(--primary-2); font-weight: 700; }
+.approval-picker select { min-width: 148px; }
 #modelProviderName { color: var(--primary-2); font-weight: 700; direction: ltr; }
 #claudeModel { width: 185px; max-width: 42vw; min-width: 0; padding: 5px 2px; border: 0; background: transparent; color: var(--text); font: inherit; cursor: pointer; text-overflow: ellipsis; }
 #claudeModel:focus { outline: none; }
 #claudeModel option { background: var(--bg-2); color: var(--text); }
+#codexApprovalMode { width: 148px; max-width: 42vw; min-width: 0; padding: 5px 2px; border: 0; background: transparent; color: var(--text); font: inherit; cursor: pointer; text-overflow: ellipsis; }
+#codexApprovalMode:focus { outline: none; }
+#codexApprovalMode option { background: var(--bg-2); color: var(--text); }
+.output-preview { min-height: 220px; max-height: 65vh; overflow: auto; direction: ltr; text-align: left; white-space: pre-wrap; margin: 0; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: #10131a; color: #e5e7eb; }
 #newClaudeForm { display: grid; gap: 12px; }
 #newClaudeForm h2, #newClaudeForm p { margin: 0; }
 #newClaudeForm p { font-size: 13px; line-height: 1.8; color: var(--muted); }
@@ -545,9 +559,11 @@ textarea:disabled { opacity: 0.65; }
 .sidebar-brand h1 { font-size: 15px; letter-spacing: normal; }
 .sidebar #newChatBtn { padding: 6px 9px; font-size: 12px; border-radius: 10px; }
 .sidebar .session-controls { grid-column: 1 / -1; gap: 5px 9px; font-size: 11px; }
+.sidebar .chat-search { grid-column: 1 / -1; }
 .sidebar .session-controls button { padding: 4px 7px; font-size: 11px; }
 .sidebar .session-controls label { display: inline-flex; align-items: center; gap: 3px; }
 .sidebar .session-controls input { margin: 0; }
+.provider-filter select { min-width: 82px; padding: 3px 5px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel-2); color: var(--text); font: inherit; }
 .sidebar #sessionsStatus { grid-column: 1 / 3; }
 .sidebar #claudeStatus { grid-column: 3; }
 .sidebar #sessionsStatus, .sidebar #claudeStatus { font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }

@@ -322,13 +322,15 @@ app.post('/api/chat', async (req, res) => {
   try {
     if (!provider.hasAuth) return res.status(400).json({ error: 'اطلاعات احراز هویت ارائه‌دهنده را در config.toml بررسی کن.' });
     const input = await buildOpenAIInput(req.body?.messages);
+    const projectContext = typeof req.body?.projectContext === 'string' ? req.body.projectContext.trim().slice(0, 12000) : '';
     if (!input.length || input.at(-1).role !== 'user') return res.status(400).json({ error: 'یک پیام جدید از طرف کاربر لازم است.' });
     const response = await callOpenAI('responses', {
       model: MODEL,
-      instructions: SYSTEM_PROMPT,
+      instructions: [SYSTEM_PROMPT, projectContext && `راهنمای پروژه:\n${projectContext}`].filter(Boolean).join('\n\n'),
       input,
       reasoning: { effort: provider.effort },
       ...(provider.codexBackend ? {} : { max_output_tokens: 16000 }),
+      ...(req.body?.webSearch && !provider.codexBackend ? { tools: [{ type: 'web_search_preview' }] } : {}),
       stream: true,
       store: false,
     });

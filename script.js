@@ -32,7 +32,7 @@ const QUEUE_STORAGE_KEY = 'persian-chat-message-queues-v1';
 function persistMessageQueues() {
   try {
     const data = [...messageQueues].map(([chatId, jobs]) => [chatId, jobs.map(job => ({
-      chatId: job.chatId, typedText: job.typedText || '', model: job.model || '', failed: Boolean(job.failed), errorText: job.errorText || '',
+      chatId: job.chatId, typedText: job.typedText || '', model: job.model || '', projectContext: job.projectContext || '', webSearch: Boolean(job.webSearch), failed: Boolean(job.failed), errorText: job.errorText || '',
       attachments: (job.attachments || []).map(({ id, originalName, mimeType, size }) => ({ id, originalName, mimeType, size })),
     }))]);
     sessionStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify({ data, paused: [...pausedQueues] }));
@@ -92,7 +92,7 @@ function submitComposerMessage() {
   if (voice && (!voice.transcript || voice.error)) { showToast('متن ویس کامل نیست.'); return; }
   const typedText = messageInput.value.trim();
   if (!typedText && !voice && !pendingAttachments.length) return;
-  const job = { chatId: chat.id, typedText, voice, attachments: [...pendingAttachments], model: chat.model || '' };
+  const job = { chatId: chat.id, typedText, voice, attachments: [...pendingAttachments], model: chat.model || '', projectContext: chat.projectContext || '', webSearch: Boolean(document.getElementById('webSearchToggle')?.checked) };
   const queue = messageQueues.get(chat.id) || [];
   queue.push(job); messageQueues.set(chat.id, queue);
   persistMessageQueues();
@@ -146,6 +146,7 @@ function createChat(title = 'گفتگوی تازه') {
     createdAt,
     updatedAt: createdAt,
     messages: [],
+    projectContext: '',
     usageSummary: createEmptyUsage(),
     statusLog: [{ at: createdAt, type: 'info', text: 'گفتگوی تازه ساخته شد.' }],
   };
@@ -158,6 +159,7 @@ function normalizeChat(chat) {
     createdAt: chat.createdAt || nowIso(),
     updatedAt: chat.updatedAt || chat.createdAt || nowIso(),
     messages: Array.isArray(chat.messages) ? chat.messages : [],
+    projectContext: typeof chat.projectContext === 'string' ? chat.projectContext : '',
     usageSummary: { ...createEmptyUsage(), ...(chat.usageSummary || {}) },
     statusLog: Array.isArray(chat.statusLog) ? chat.statusLog : [],
   };
@@ -442,8 +444,12 @@ function renderChatList() {
   chatList.innerHTML = '';
   const archived = document.getElementById('archivedSessions').checked;
   const activeOnly = document.getElementById('activeSessions').checked;
+  const query = (document.getElementById('chatSearch')?.value || '').trim().toLowerCase();
+  const providerFilter = document.getElementById('sessionProviderFilter')?.value || 'all';
   const sorted = [...chatStore.chats, ...codexChats]
-    .filter(chat => Boolean(chat.archived) === Boolean(archived) && (!activeOnly || isActiveConversation(chat)))
+    .filter(chat => Boolean(chat.archived) === Boolean(archived) && (!activeOnly || isActiveConversation(chat))
+      && (providerFilter === 'all' || providerFilter === (isProjectChat(chat) ? chat.source : 'openai'))
+      && (!query || `${chat.title} ${getLastPreview(chat)} ${chat.projectContext || ''}`.toLowerCase().includes(query)))
     .sort((a, b) => chatLastMessageTime(b) - chatLastMessageTime(a));
   for (const chat of sorted) {
     const row = document.createElement('div'); row.className = 'session-row';
@@ -528,6 +534,8 @@ function syncComposerState() {
   sendBtn.textContent = activeIsSending ? 'افزودن به صف' : 'ارسال';
   renderMessageQueue();
   const codex = isProjectChat(getActiveChat());
+  const webSearch = document.getElementById('webSearchLabel');
+  if (webSearch) webSearch.hidden = codex;
   if (typeof syncClaudeModel === 'function') syncClaudeModel();
   if (typeof syncCodexApprovalMode === 'function') syncCodexApprovalMode();
   clearBtn.disabled = codex;
@@ -721,7 +729,7 @@ async function sendMessage(job) {
     const response = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chatId, messages: chat.messages }),
+      body: JSON.stringify({ chatId, messages: chat.messages, projectContext: job?.projectContext || chat.projectContext || '', webSearch: Boolean(job?.webSearch || document.getElementById('webSearchToggle')?.checked) }),
       signal: controller.signal,
     });
 
@@ -855,6 +863,32 @@ consoleDialog.addEventListener('click', event => {
   const bounds = consoleDialog.getBoundingClientRect();
   if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) consoleDialog.close();
 });
+document.getElementById('chatSearch').addEventListener('input', renderChatList);
+document.getElementById('sessionProviderFilter').addEventListener('change', renderChatList);
+document.getElementById('projectContextBtn').onclick = () => {
+  const chat = getActiveChat();
+  document.getElementById('projectContextInput').value = chat.projectContext || '';
+  document.getElementById('projectContextDialog').showModal();
+};
+document.getElementById('cancelProjectContextBtn').onclick = () => document.getElementById('projectContextDialog').close();
+document.getElementById('projectContextForm').onsubmit = event => {
+  event.preventDefault();
+  const chat = getActiveChat();
+  chat.projectContext = document.getElementById('projectContextInput').value.trim().slice(0, 12000);
+  if (chatStore.chats.includes(chat)) saveChatStore();
+  document.getElementById('projectContextDialog').close();
+  renderChatList();
+  showToast(chat.projectContext ? 'context پروژه ذخیره شد.' : 'context پروژه پاک شد.');
+};
+document.getElementById('showOutputBtn').onclick = () => {
+  const chat = getActiveChat();
+  const latest = [...(chat.messages || [])].reverse().find(message => message.role === 'assistant' && message.content);
+  const content = latest?.content || '';
+  const match = content.match(/```(?:[\w+-]+)?\s*([\s\S]*?)```/);
+  document.getElementById('outputPreview').textContent = match?.[1]?.trim() || content.trim() || 'خروجی قابل نمایش وجود ندارد.';
+  document.getElementById('outputDialog').showModal();
+};
+document.getElementById('closeOutputBtn').onclick = () => document.getElementById('outputDialog').close();
 restoreMessageQueues();
 setupVoiceInput();
 renderApp();

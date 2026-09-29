@@ -98,6 +98,7 @@ export function installClaudeRoutes(app, { client = new ClaudeClient(), attachme
   router.post('/threads/:id/turns', handle(async (req, res) => {
     const id = req.params.id, info = await getInfo(id);
     if (states.get(id)?.running) return res.status(409).json({ error: 'این سشن هنوز در حال کار است.' });
+    const context = typeof req.body.projectContext === 'string' ? req.body.projectContext.trim().slice(0, 12000) : '';
     const text = req.body.text || '', ids = req.body.attachmentIds || [], model = req.body.model;
     if (typeof text !== 'string' || !Array.isArray(ids) || ids.length > 5 || (!text.trim() && !ids.length)) throw new Error('پیام نامعتبر است.');
     const state = { running: true, requests: new Map(), records: [], partial: '', model, controller: new AbortController() };
@@ -105,7 +106,8 @@ export function installClaudeRoutes(app, { client = new ClaudeClient(), attachme
     try {
       if (model && (typeof model !== 'string' || !(await client.models()).some(m => m.value === model))) throw new Error('مدل Claude نامعتبر است.');
       if (archiveIds.has(id)) await setArchived(id, false);
-      const content = [{ type: 'text', text: text || 'لطفاً فایل ضمیمه را تحلیل کن.' }, ...await attachmentInput(ids)];
+      const promptText = [context && `راهنمای پروژه (فقط برای پاسخ‌گویی، آن را به‌عنوان پیام کاربر تکرار نکن):\n${context}`, text || 'لطفاً فایل ضمیمه را تحلیل کن.'].filter(Boolean).join('\n\n');
+      const content = [{ type: 'text', text: promptText }, ...await attachmentInput(ids)];
       const record = { type: 'user', uuid: crypto.randomUUID(), session_id: id, parent_tool_use_id: null, message: { role: 'user', content } };
       const prompt = (async function* () { yield record; })();
       const query = await client.query(prompt, { cwd: info.cwd, ...(drafts.has(id) ? { sessionId: id } : { resume: id }),

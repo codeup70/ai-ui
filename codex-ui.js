@@ -174,7 +174,10 @@ async function refreshCodexThread(chatId) {
     }
     if (!data.running && !chat.submitting && sendingChatIds.has(chatId) && chatId !== activeChatId) chat.unreadReply = true;
     if (data.running) sendingChatIds.add(chatId);
-    else if (!chat.submitting) {
+    else {
+      // The server is authoritative once it reports no running turn. Clear
+      // the client flag even if the send promise is still unwinding; its
+      // finally block still prevents a queued job from starting too early.
       sendingChatIds.delete(chatId);
       if (chat.stopRequested) {
         chat.stopRequested = false;
@@ -265,7 +268,7 @@ async function sendCodexMessage(job) {
   sendingChatIds.add(chat.id);
   syncComposerState();
   try {
-    await projectApi(chat, `/threads/${encodeURIComponent(chat.threadId)}/turns`, { text, attachmentIds: attachments.map(a => a.id), model: job?.model ?? chat.model ?? '' });
+    await projectApi(chat, `/threads/${encodeURIComponent(chat.threadId)}/turns`, { text, attachmentIds: attachments.map(a => a.id), model: job?.model ?? chat.model ?? '', projectContext: job?.projectContext || chat.projectContext || '' });
     chat.lastMessageAt = nowIso();
     renderChatList();
     if (chat.archived) { chat.archived = false; codexListVersion++; refreshCodexSessions(); }

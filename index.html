@@ -20,7 +20,9 @@
           <button id="refreshSessionsBtn" class="ghost" type="button">تازه‌سازی سشن‌ها</button>
           <label><input id="archivedSessions" type="checkbox" /> آرشیوشده‌ها</label>
           <label><input id="activeSessions" type="checkbox" /> فقط گفتگوهای فعال</label>
+          <label class="provider-filter"><span>نوع</span><select id="sessionProviderFilter" aria-label="فیلتر provider"><option value="all">همه</option><option value="codex">Codex</option><option value="claude">Claude</option><option value="openai">OpenAI</option></select></label>
         </div>
+        <label class="chat-search"><span class="sr-only">جست‌وجوی گفتگوها</span><input id="chatSearch" type="search" placeholder="جست‌وجوی گفتگو…" autocomplete="off" /></label>
         <span id="sessionsStatus" class="chat-meta" role="status">در حال اتصال به Codex…</span>
         <span id="claudeStatus" class="chat-meta" role="status">در حال اتصال به Claude…</span>
       </div>
@@ -36,6 +38,8 @@
         </div>
         <div class="chat-toolbar-actions">
           <button id="showConsoleBtn" class="ghost" type="button" aria-haspopup="dialog" aria-controls="consoleDialog">وضعیت و مصرف</button>
+          <button id="showOutputBtn" class="ghost" type="button" aria-haspopup="dialog" aria-controls="outputDialog">خروجی</button>
+          <button id="projectContextBtn" class="ghost" type="button">context پروژه</button>
           <button id="archiveChatBtn" class="ghost" type="button" hidden>آرشیو گفتگو</button>
           <button id="clearBtn" class="ghost" type="button">پاک کردن پیام‌های این گفتگو</button>
         </div>
@@ -60,7 +64,8 @@
         <div class="composer-footer">
           <div class="composer-tools">
             <label id="claudeModelLabel" class="model-picker" hidden><span id="modelProviderName">مدل</span><select id="claudeModel" aria-label="مدل گفتگو"><option value="">پیش‌فرض گفتگو</option></select></label>
-            <label id="codexApprovalLabel" class="model-picker" hidden><span>اجازه</span><select id="codexApprovalMode" aria-label="حالت اجازه"><option value="ask">پرسش برای هر درخواست</option><option value="auto-accept">خواندن خودکار، نوشتن با اجازه</option><option value="auto-decline">رد خودکار</option></select></label>
+            <label id="codexApprovalLabel" class="model-picker approval-picker" hidden><span>دسترسی</span><select id="codexApprovalMode" aria-label="حالت اجازه"><option value="ask">دستی</option><option value="auto-accept">خودکار؛ خواندن آزاد</option><option value="auto-decline">رد خودکار</option></select></label>
+            <label id="webSearchLabel" class="model-picker web-search-picker"><input id="webSearchToggle" type="checkbox" /><span>جست‌وجوی وب</span></label>
             <input id="fileInput" class="sr-only" type="file" multiple accept="image/png,image/jpeg,image/webp,application/pdf,text/plain,.txt,.md,.json,.csv,.js,.ts,.html,.css,.py,.xlsx,.xls" />
             <button id="attachBtn" class="icon-button" type="button">ضمیمه فایل</button>
             <button id="voiceBtn" class="icon-button" type="button">ضبط ویس</button>
@@ -92,6 +97,8 @@
   </main>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <dialog id="outputDialog" class="console-card" aria-labelledby="outputTitle"><div class="console-header"><div><p class="eyebrow">Output</p><h2 id="outputTitle">خروجی آخر</h2></div><button id="closeOutputBtn" class="ghost" type="button">بستن</button></div><pre id="outputPreview" class="output-preview"></pre></dialog>
+  <dialog id="projectContextDialog" class="console-card" aria-labelledby="projectContextTitle"><form id="projectContextForm"><h2 id="projectContextTitle">context پروژه</h2><p>راهنمای کوتاه این گفتگو را وارد کن؛ همراه پیام‌های بعدی برای مدل ارسال می‌شود.</p><textarea id="projectContextInput" rows="7" placeholder="مثلاً: این پروژه با Node.js و RTL نوشته شده است…"></textarea><button type="submit">ذخیره</button><button id="cancelProjectContextBtn" class="ghost" type="button">لغو</button></form></dialog>
   <dialog id="newClaudeDialog" class="console-card" aria-labelledby="newClaudeTitle">
     <form id="newClaudeForm">
       <h2 id="newClaudeTitle">گفتگوی تازه</h2>

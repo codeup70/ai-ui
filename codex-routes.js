@@ -69,12 +69,10 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
   const approvalActivity = new Map();
   const validApprovalModes = new Set(['ask', 'auto-accept', 'auto-decline']);
   const nativeApprovalApplied = new Map();
-  const nativeApprovalSettings = mode => mode === 'auto-accept'
-    // Match the CLI's normal automatic mode: trusted/read-only work runs
-    // without a prompt, while untrusted commands and writes still request
-    // approval. Keep the workspace sandbox and network disabled.
-    ? { approvalPolicy: 'untrusted', sandboxPolicy: { type: 'workspaceWrite', networkAccess: false } }
-    : { approvalPolicy: 'on-request' };
+  // Keep the app-server on its broadly supported policy. The UI's request
+  // handler applies the per-tool automatic decision, so older app-servers do
+  // not fail on newer native policy values.
+  const nativeApprovalSettings = () => ({ approvalPolicy: 'on-request' });
   const approvalResponse = (request, mode) => {
     if (request.method === 'item/tool/requestUserInput') return null;
     const accept = mode === 'auto-accept';
@@ -221,6 +219,7 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
   router.post('/threads/:id/turns', handle(async (req, res) => {
     const id = req.params.id;
     if (running.has(id) || starting.has(id)) return res.status(409).json({ error: 'این گفتگو هنوز در حال اجراست.' });
+    const context = typeof req.body.projectContext === 'string' ? req.body.projectContext.trim().slice(0, 12000) : '';
     const text = typeof req.body.text === 'string' ? req.body.text.trim() : '';
     const ids = req.body.attachmentIds || [];
     if (!text && !ids.length) throw new Error('پیام خالی است.');
@@ -242,7 +241,8 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
       // After a server restart, the persisted thread status can remain "active"
       // even though this app-server has no running turn. The in-memory running
       // guard above and turn/start response are authoritative for this process.
-      const input = [...(text ? [{ type: 'text', text }] : []), ...extra];
+      const promptText = [context && `راهنمای پروژه (فقط برای پاسخ‌گویی، آن را به‌عنوان پیام کاربر تکرار نکن):\n${context}`, text].filter(Boolean).join('\n\n');
+      const input = [...(promptText ? [{ type: 'text', text: promptText }] : []), ...extra];
       const model = req.body.model;
       if (model && (typeof model !== 'string' || model.length > 200)) throw new Error('مدل نامعتبر است.');
       const { turn } = await client.request('turn/start', { threadId: id, input, ...(model ? { model } : {}) });
