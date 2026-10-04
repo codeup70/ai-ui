@@ -161,7 +161,7 @@ function normalizeChat(chat) {
     createdAt: chat.createdAt || nowIso(),
     updatedAt: chat.updatedAt || chat.createdAt || nowIso(),
     messages: Array.isArray(chat.messages) ? chat.messages : [],
-    projectContext: typeof chat.projectContext === 'string' ? chat.projectContext : '',
+    projectContext: readProjectContext(chat),
     usageSummary: { ...createEmptyUsage(), ...(chat.usageSummary || {}) },
     statusLog: Array.isArray(chat.statusLog) ? chat.statusLog : [],
   };
@@ -203,6 +203,20 @@ function loadChatStore() {
   return { version: 1, activeChatId: chat.id, chats: [chat] };
 }
 
+function readProjectContext(chat) {
+  if (/^(codex|claude)_/.test(chat.id || '')) {
+    try { const saved = localStorage.getItem('persian-project-context-v1:' + chat.id); if (saved !== null) return saved; } catch {}
+  }
+  return typeof chat.projectContext === 'string' ? chat.projectContext : '';
+}
+function saveProjectContext(chat, value) {
+  if (isProjectChat(chat)) localStorage.setItem('persian-project-context-v1:' + chat.id, value);
+  const previous = chat.projectContext;
+  chat.projectContext = value;
+  if (!isProjectChat(chat)) {
+    try { saveChatStore(); } catch (error) { chat.projectContext = previous; throw error; }
+  }
+}
 function saveChatStore() {
   localStorage.setItem(CHATS_STORAGE_KEY, JSON.stringify({ ...chatStore, activeChatId }));
   localStorage.setItem('persian-chat-active-session', activeChatId);
@@ -296,6 +310,73 @@ function createAttachmentChip(attachment, removable = false) {
   return chip;
 }
 
+function renderMarkdownInline(container, text, depth = 0) {
+  if (depth > 6) { container.append(document.createTextNode(text)); return; }
+  const pattern = /(`+)([^`\n]+)\1|\[([^\]\n]+)\]\(([^\s]+?)(?:\s+"[^"]*")?\)|\*\*([^\n]+?)\*\*|__([^\n]+?)__|~~([^\n]+?)~~|\*([^*\n]+)\*|_([^_\n]+)_|https?:\/\/[^\s<>]+/g;
+  let offset = 0;
+  for (const match of text.matchAll(pattern)) {
+    container.append(document.createTextNode(text.slice(offset, match.index)));
+    let node;
+    if (match[1]) { node = document.createElement('code'); node.textContent = match[2]; }
+    else if (match[3] || /^https?:/.test(match[0])) {
+      const href = match[4] || match[0];
+      let safe = false;
+      try { safe = ['http:', 'https:', 'mailto:'].includes(new URL(href).protocol); } catch {}
+      if (safe) {
+        node = document.createElement('a'); node.href = href; node.target = '_blank'; node.rel = 'noopener noreferrer';
+        node.textContent = match[3] || href;
+      } else { node = document.createElement('span'); node.textContent = match[0]; }
+    } else {
+      node = document.createElement(match[5] || match[6] ? 'strong' : match[7] ? 'del' : 'em');
+      renderMarkdownInline(node, match[5] || match[6] || match[7] || match[8] || match[9], depth + 1);
+    }
+    container.append(node); offset = match.index + match[0].length;
+  }
+  container.append(document.createTextNode(text.slice(offset)));
+}
+function renderMarkdownProse(container, lines) {
+  const cells = line => line.trim().replace(/^\||\|$/g, '').split(/(?<!\\)\|/).map(cell => cell.trim().replace(/\\\|/g, '|'));
+  const separator = line => line.includes('|') && cells(line).every(cell => /^:?-{3,}:?$/.test(cell));
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) { i++; continue; }
+    if (i + 1 < lines.length && line.includes('|') && separator(lines[i + 1])) {
+      const wrap = document.createElement('div'); wrap.className = 'markdown-table'; wrap.tabIndex = 0;
+      const table = document.createElement('table'), head = document.createElement('thead'), body = document.createElement('tbody');
+      const row = (values, tag) => { const tr = document.createElement('tr'); for (const value of values) { const cell = document.createElement(tag); renderMarkdownInline(cell, value); tr.append(cell); } return tr; };
+      head.append(row(cells(line), 'th')); i += 2;
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim()) body.append(row(cells(lines[i++]), 'td'));
+      table.append(head, body); wrap.append(table); container.append(wrap); continue;
+    }
+    const heading = line.match(/^ {0,3}(#{1,6})\s+(.+?)(?:\s+#+)?$/);
+    if (heading) { const node = document.createElement('h' + Math.min(heading[1].length + 1, 6)); renderMarkdownInline(node, heading[2]); container.append(node); i++; continue; }
+    if (/^\s*(?:---+|\*\*\*+|___+)\s*$/.test(line)) { container.append(document.createElement('hr')); i++; continue; }
+    if (/^\s*>/.test(line)) {
+      const node = document.createElement('blockquote'), quote = [];
+      while (i < lines.length && /^\s*>/.test(lines[i])) quote.push(lines[i++].replace(/^\s*>\s?/, ''));
+      // Inline rendering keeps deeply nested quote input bounded.
+      renderMarkdownInline(node, quote.join('\n')); container.append(node); continue;
+    }
+    const itemPattern = /^(\s*)([-+*]|\d+[.)])\s+(.+)$/;
+    const item = line.match(itemPattern);
+    if (item) {
+      const ordered = /^\d/.test(item[2]), list = document.createElement(ordered ? 'ol' : 'ul');
+      if (ordered) list.start = parseInt(item[2], 10);
+      while (i < lines.length) {
+        const match = lines[i].match(itemPattern);
+        if (!match || /^\d/.test(match[2]) !== ordered) break;
+        const li = document.createElement('li');
+        li.style.marginInlineStart = Math.min(match[1].length, 12) * .4 + 'em';
+        renderMarkdownInline(li, match[3]); list.append(li); i++;
+      }
+      container.append(list); continue;
+    }
+    const paragraph = document.createElement('p'), prose = [line]; i++;
+    while (i < lines.length && lines[i].trim() && !/^\s*(?:#{1,6}\s|>|[-+*]\s|\d+[.)]\s|---+$)/.test(lines[i]) && !(i + 1 < lines.length && separator(lines[i + 1]))) prose.push(lines[i++]);
+    renderMarkdownInline(paragraph, prose.join('\n')); container.append(paragraph);
+  }
+}
 function renderMessageContent(container, text) {
   // Render fences with DOM text nodes: model/user content is never interpreted as HTML.
   const lines = text.split('\n');
@@ -304,7 +385,7 @@ function renderMessageContent(container, text) {
     if (!prose.length) return;
     const paragraph = document.createElement('div');
     paragraph.className = 'message-prose';
-    paragraph.textContent = prose.join('\n');
+    renderMarkdownProse(paragraph, prose);
     container.append(paragraph);
     prose = [];
   };
@@ -403,6 +484,7 @@ function renderMessages() {
   releaseVoicePlayers(chatLog);
   chatLog.innerHTML = '';
   activeChatTitle.textContent = chat.title;
+  document.getElementById('activeProviderLabel').textContent = isProjectChat(chat) ? agentName(chat) : 'OpenAI';
   document.getElementById('projectPath').textContent = isProjectChat(chat) && !chat.general ? chat.cwd : 'گفتگوی عادی';
 
   if (!chat.messages.length) {
@@ -428,7 +510,7 @@ function renderMessages() {
 
 function getLastPreview(chat) {
   const last = [...chat.messages].reverse().find((message) => message.content || message.attachments?.length);
-  if (!last) return 'هنوز پیامی ندارد';
+  if (!last) return isProjectChat(chat) && !chat.loaded ? 'برای دیدن تاریخچه باز کن' : 'هنوز پیامی ندارد';
   return last.content ? last.content.replace(/\s+/g, ' ').slice(0, 70) : 'فایل ضمیمه شده است';
 }
 
@@ -451,7 +533,7 @@ function renderChatList() {
   const sorted = [...chatStore.chats, ...codexChats]
     .filter(chat => Boolean(chat.archived) === Boolean(archived) && (!activeOnly || isActiveConversation(chat))
       && (providerFilter === 'all' || providerFilter === (isProjectChat(chat) ? chat.source : 'openai'))
-      && (!query || `${chat.title} ${getLastPreview(chat)} ${chat.projectContext || ''}`.toLowerCase().includes(query)))
+      && (!query || chat.title.toLowerCase().includes(query)))
     .sort((a, b) => chatLastMessageTime(b) - chatLastMessageTime(a));
   for (const chat of sorted) {
     const row = document.createElement('div'); row.className = 'session-row';
@@ -477,7 +559,14 @@ function renderChatList() {
     rename.title = 'ویرایش عنوان'; rename.setAttribute('aria-label', `ویرایش عنوان ${chat.title}`);
     rename.disabled = Boolean(chat.deleting || chat.archiving || chat.renaming);
     rename.onclick = () => openRenameChat(chat.id);
-    row.append(item, rename, remove); chatList.append(row);
+    const actions = document.createElement('button'); actions.type = 'button'; actions.className = 'ghost session-actions'; actions.textContent = '⋯';
+    actions.title = 'گزینه‌های گفتگو'; actions.setAttribute('aria-label', `گزینه‌های ${chat.title}`);
+    actions.onclick = () => {
+      const popup = document.getElementById('sessionActionsPopover');
+      rename.textContent = 'ویرایش عنوان'; popup.replaceChildren(rename, remove);
+      positionActionPopover(popup, actions);
+    };
+    row.append(item, actions); chatList.append(row);
   }
   if (!sorted.length) {
     const empty = document.createElement('p'); empty.className = 'chat-meta';
@@ -896,8 +985,8 @@ document.getElementById('cancelProjectContextBtn').onclick = () => document.getE
 document.getElementById('projectContextForm').onsubmit = event => {
   event.preventDefault();
   const chat = getActiveChat();
-  chat.projectContext = document.getElementById('projectContextInput').value.trim().slice(0, 12000);
-  if (chatStore.chats.includes(chat)) saveChatStore();
+  try { saveProjectContext(chat, document.getElementById('projectContextInput').value.trim().slice(0, 12000)); }
+  catch { showToast('ذخیرهٔ راهنمای پروژه ناموفق بود؛ فضای ذخیره‌سازی مرورگر را بررسی کن.'); return; }
   document.getElementById('projectContextDialog').close();
   renderChatList();
   showToast(chat.projectContext ? 'context پروژه ذخیره شد.' : 'context پروژه پاک شد.');
@@ -906,8 +995,8 @@ document.getElementById('showOutputBtn').onclick = () => {
   const chat = getActiveChat();
   const latest = [...(chat.messages || [])].reverse().find(message => message.role === 'assistant' && message.content);
   const content = latest?.content || '';
-  const match = content.match(/```(?:[\w+-]+)?\s*([\s\S]*?)```/);
-  document.getElementById('outputPreview').textContent = match?.[1]?.trim() || content.trim() || 'خروجی قابل نمایش وجود ندارد.';
+  document.getElementById('outputPreview').replaceChildren();
+  renderMessageContent(document.getElementById('outputPreview'), content.trim() || 'هنوز پاسخی برای نمایش وجود ندارد.');
   document.getElementById('outputDialog').showModal();
 };
 document.getElementById('closeOutputBtn').onclick = () => document.getElementById('outputDialog').close();
@@ -1196,6 +1285,7 @@ function setupForkChat() {
         const thread = result.thread; warning = result.warning;
         copy = Object.assign(normalizeChat({ ...thread, id: original.source + '_' + thread.id }), { source: original.source, threadId: thread.id, cwd: thread.cwd, general: thread.general, model, projectContext: original.projectContext || '', archived: false });
         codexChats.push(copy);
+        try { saveProjectContext(copy, copy.projectContext); } catch { warning = 'کپی ساخته شد؛ ذخیرهٔ راهنمای پروژه در مرورگر ناموفق بود.'; }
         // Keep the selected policy scoped to the new session, without copying pending requests or jobs.
         codexApprovalModes[copy.source + ':' + copy.threadId] = desiredApprovalMode(original);
         try { localStorage.setItem(CODEX_APPROVAL_MODES_KEY, JSON.stringify(codexApprovalModes)); } catch { warning = 'کپی ساخته شد، اما ذخیرهٔ تنظیمات مرورگر ناموفق بود.'; }
@@ -1212,6 +1302,33 @@ function setupForkChat() {
   };
 }
 
+function positionActionPopover(popup, trigger) {
+  popup.showPopover();
+  const rect = trigger.getBoundingClientRect();
+  popup.style.left = Math.max(8, Math.min(rect.right - popup.offsetWidth, window.innerWidth - popup.offsetWidth - 8)) + 'px';
+  popup.style.top = Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - popup.offsetHeight - 8)) + 'px';
+}
+function setupDesktopPolish() {
+  const more = document.getElementById('moreChatActions');
+  for (const id of ['showOutputBtn', 'exportChatBtn', 'projectContextBtn', 'forkChatBtn', 'archiveChatBtn', 'clearBtn']) more.append(document.getElementById(id));
+  document.getElementById('moreChatBtn').onclick = event => {
+    event.preventDefault();
+    if (more.matches(':popover-open')) more.hidePopover(); else positionActionPopover(more, event.currentTarget);
+  };
+  for (const id of ['moreChatActions', 'sessionActionsPopover']) {
+    const popup = document.getElementById(id);
+    popup.addEventListener('click', event => { if (event.target.closest('button')) popup.hidePopover(); }, true);
+  }
+  const scope = document.getElementById('messageSearchScope'), archive = document.getElementById('messageSearchArchived');
+  const updateScope = () => { archive.disabled = scope.value !== 'all'; archive.closest('label').classList.toggle('muted-control', archive.disabled); };
+  scope.addEventListener('change', updateScope); updateScope();
+  for (const dialog of document.querySelectorAll('dialog')) dialog.addEventListener('click', event => {
+    if (event.target !== dialog || dialog.querySelector('button[type="submit"]:disabled, #downloadChatBtn:disabled')) return;
+    const rect = dialog.getBoundingClientRect();
+    if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close();
+  });
+}
+
 restoreMessageQueues();
 setupVoiceInput();
 renderApp();
@@ -1222,3 +1339,4 @@ setupComposerResize();
 setupTranscriptTools();
 setupRenameChat();
 setupForkChat();
+setupDesktopPolish();

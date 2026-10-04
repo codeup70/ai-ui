@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>گفتگوی فارسی با OpenAI</title>
+  <title>گفتگوهای هوش مصنوعی</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -22,29 +22,30 @@
           <label><input id="activeSessions" type="checkbox" /> فقط گفتگوهای فعال</label>
           <label class="provider-filter"><span>نوع</span><select id="sessionProviderFilter" aria-label="فیلتر provider"><option value="all">همه</option><option value="codex">Codex</option><option value="claude">Claude</option><option value="openai">OpenAI</option></select></label>
         </div>
-        <label class="chat-search"><span class="sr-only">جست‌وجوی گفتگوها</span><input id="chatSearch" type="search" placeholder="جست‌وجوی گفتگو…" autocomplete="off" /></label>
+        <label class="chat-search"><span class="sr-only">جست‌وجوی عنوان گفتگو</span><input id="chatSearch" type="search" placeholder="جست‌وجوی عنوان گفتگو…" autocomplete="off" /></label>
         <span id="sessionsStatus" class="chat-meta" role="status">در حال اتصال به Codex…</span>
         <span id="claudeStatus" class="chat-meta" role="status">در حال اتصال به Claude…</span>
       </div>
       <div id="chatList" class="chat-list"></div>
     </aside>
 
-    <section class="chat-card" aria-label="گفتگو با OpenAI">
+    <section class="chat-card" aria-label="گفتگوی انتخاب‌شده">
       <header class="chat-toolbar">
         <div>
-          <p class="eyebrow">OpenAI Chat</p>
+          <p id="activeProviderLabel" class="eyebrow">OpenAI</p>
           <h2 id="activeChatTitle">گفتگوی تازه</h2>
           <p id="projectPath">فارسی، فایل، عکس و چند گفتگوی جداگانه</p>
         </div>
         <div class="chat-toolbar-actions">
           <button id="showConsoleBtn" class="ghost" type="button" aria-haspopup="dialog" aria-controls="consoleDialog">وضعیت و مصرف</button>
-          <button id="showOutputBtn" class="ghost" type="button" aria-haspopup="dialog" aria-controls="outputDialog">خروجی</button>
+          <button id="showOutputBtn" class="ghost" type="button" aria-haspopup="dialog" aria-controls="outputDialog">آخرین پاسخ</button>
           <button id="searchMessagesBtn" class="ghost transcript-toolbar-button" type="button" aria-label="جست‌وجوی پیام‌ها" title="جست‌وجوی پیام‌ها" aria-haspopup="dialog" aria-controls="messageSearchDialog"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg><span>جست‌وجو</span></button>
           <button id="exportChatBtn" class="ghost transcript-toolbar-button" type="button" aria-label="دانلود گفتگو" title="دانلود گفتگو" aria-haspopup="dialog" aria-controls="exportChatDialog"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"/></svg><span>دانلود</span></button>
-          <button id="projectContextBtn" class="ghost" type="button">context پروژه</button>
+          <button id="projectContextBtn" class="ghost" type="button">راهنمای پروژه</button>
           <button id="forkChatBtn" class="ghost" type="button" aria-haspopup="dialog" aria-controls="forkChatDialog">کپی و ادامه</button>
           <button id="archiveChatBtn" class="ghost" type="button" hidden>آرشیو گفتگو</button>
           <button id="clearBtn" class="ghost" type="button">پاک کردن پیام‌های این گفتگو</button>
+          <button id="moreChatBtn" class="ghost" type="button" popovertarget="moreChatActions" aria-label="گزینه‌های بیشتر گفتگو">بیشتر ⋯</button>
         </div>
       </header>
 
@@ -102,6 +103,8 @@
   </main>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="moreChatActions" class="action-popover" popover="auto" aria-label="گزینه‌های گفتگو"></div>
+  <div id="sessionActionsPopover" class="action-popover" popover="auto" aria-label="گزینه‌های سشن"></div>
   <dialog id="forkChatDialog" class="console-card" aria-labelledby="forkChatTitle">
     <form id="forkChatForm">
       <div class="console-header"><div><h2 id="forkChatTitle">کپی و ادامه</h2><p class="transcript-subtitle">ادامهٔ همین تاریخچه در یک گفتگوی مستقل.</p></div><button id="closeForkChat" class="ghost transcript-close" type="button" aria-label="بستن">×</button></div>
@@ -135,8 +138,8 @@
     <p class="transcript-export-note">متن پیام‌ها و نام ضمیمه‌ها ذخیره می‌شود؛ فایل و صوت همراه آن نیست. اگر پاسخ هنوز در حال نوشتن است، برای نسخهٔ کامل صبر کن.</p>
     <div class="transcript-export-footer"><p id="exportChatStatus" role="status" aria-live="polite"></p><button id="downloadChatBtn" type="button">دانلود فایل</button></div>
   </dialog>
-  <dialog id="outputDialog" class="console-card" aria-labelledby="outputTitle"><div class="console-header"><div><p class="eyebrow">Output</p><h2 id="outputTitle">خروجی آخر</h2></div><button id="closeOutputBtn" class="ghost" type="button">بستن</button></div><pre id="outputPreview" class="output-preview"></pre></dialog>
-  <dialog id="projectContextDialog" class="console-card" aria-labelledby="projectContextTitle"><form id="projectContextForm"><h2 id="projectContextTitle">context پروژه</h2><p>راهنمای کوتاه این گفتگو را وارد کن؛ همراه پیام‌های بعدی برای مدل ارسال می‌شود.</p><textarea id="projectContextInput" rows="7" placeholder="مثلاً: این پروژه با Node.js و RTL نوشته شده است…"></textarea><button type="submit">ذخیره</button><button id="cancelProjectContextBtn" class="ghost" type="button">لغو</button></form></dialog>
+  <dialog id="outputDialog" class="console-card" aria-labelledby="outputTitle"><div class="console-header"><h2 id="outputTitle">آخرین پاسخ</h2><button id="closeOutputBtn" class="ghost transcript-close" type="button" aria-label="بستن آخرین پاسخ">×</button></div><div id="outputPreview" class="output-preview"></div></dialog>
+  <dialog id="projectContextDialog" class="console-card" aria-labelledby="projectContextTitle"><form id="projectContextForm"><h2 id="projectContextTitle">راهنمای پروژه</h2><p>این راهنما در همین مرورگر برای این گفتگو ذخیره می‌شود و همراه پیام‌های بعدی برای مدل ارسال می‌شود.</p><label class="sr-only" for="projectContextInput">متن راهنمای پروژه</label><textarea id="projectContextInput" rows="7" maxlength="12000" placeholder="مثلاً: این پروژه با Node.js و RTL نوشته شده است…"></textarea><div class="dialog-footer"><button id="cancelProjectContextBtn" class="ghost" type="button">لغو</button><button type="submit">ذخیرهٔ راهنما</button></div></form></dialog>
   <dialog id="newClaudeDialog" class="console-card" aria-labelledby="newClaudeTitle">
     <form id="newClaudeForm">
       <h2 id="newClaudeTitle">گفتگوی تازه</h2>
@@ -148,8 +151,7 @@
       </details>
       <p>برای سؤال و گفتگوی عادی، کافی است دستیار را انتخاب کنی و شروع کنی.</p>
       <p id="claudeCreateError" role="alert"></p>
-      <button id="createClaudeBtn" type="submit">شروع گفتگو</button>
-      <button id="cancelClaudeBtn" class="ghost" type="button">لغو</button>
+      <div class="dialog-footer"><button id="cancelClaudeBtn" class="ghost" type="button">لغو</button><button id="createClaudeBtn" type="submit">شروع گفتگو</button></div>
     </form>
   </dialog>
   <script src="voice.js"></script>
