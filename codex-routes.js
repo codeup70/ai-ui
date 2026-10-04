@@ -68,11 +68,6 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
   const approvalModes = new Map();
   const approvalActivity = new Map();
   const validApprovalModes = new Set(['ask', 'auto-accept', 'auto-decline']);
-  const nativeApprovalApplied = new Map();
-  // Keep the app-server on its broadly supported policy. The UI's request
-  // handler applies the per-tool automatic decision, so older app-servers do
-  // not fail on newer native policy values.
-  const nativeApprovalSettings = () => ({ approvalPolicy: 'on-request' });
   const approvalResponse = (request, mode) => {
     if (request.method === 'item/tool/requestUserInput') return null;
     const accept = mode === 'auto-accept';
@@ -170,16 +165,8 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
   router.post('/threads/:id/approval-mode', handle(async (req, res) => {
     const mode = req.body.mode;
     if (!validApprovalModes.has(mode)) throw new Error('حالت اجازه نامعتبر است.');
-    let nativeApplied = true;
-    try {
-      await client.request('thread/settings/update', { threadId: req.params.id, ...nativeApprovalSettings(mode) });
-    } catch (error) {
-      if (!/method not found|unknown method|not supported|unsupported/i.test(error.message)) throw error;
-      nativeApplied = false;
-    }
     approvalModes.set(req.params.id, mode);
-    nativeApprovalApplied.set(req.params.id, nativeApplied);
-    res.json({ mode, nativeApplied });
+    res.json({ mode });
   }));
   router.post('/threads', handle(async (req, res) => {
     const cwd = await resolveChatWorkspace(req.body.cwd);
@@ -245,7 +232,16 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
       const input = [...(promptText ? [{ type: 'text', text: promptText }] : []), ...extra];
       const model = req.body.model;
       if (model && (typeof model !== 'string' || model.length > 200)) throw new Error('مدل نامعتبر است.');
-      const { turn } = await client.request('turn/start', { threadId: id, input, ...(model ? { model } : {}) });
+      // Ask Codex to surface untrusted command/file operations. The local
+      // request handler then applies the selected UI mode; without this
+      // per-turn policy, trusted workspaces can bypass the manual prompt.
+      const approvalPolicy = approvalModes.has(id) ? 'on-request' : undefined;
+      const sandboxPolicy = approvalModes.has(id) ? { type: 'readOnly', networkAccess: false } : undefined;
+      const { turn } = await client.request('turn/start', {
+        threadId: id, input,
+        ...(approvalPolicy ? { approvalPolicy, sandboxPolicy } : {}),
+        ...(model ? { model } : {}),
+      });
       // turn/started is authoritative; completion may race this response.
       res.json({ turnId: turn.id });
     } finally { starting.delete(id); }
@@ -283,7 +279,6 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
       freshThreads.delete(id);
       approvalActivity.delete(id);
       approvalModes.delete(id);
-      nativeApprovalApplied.delete(id);
       archived.delete(id);
       live.delete(id);
       errors.delete(id);

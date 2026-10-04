@@ -28,6 +28,7 @@ let sendingChatIds = new Set();
 const openAIControllers = new Map();
 const messageQueues = new Map();
 const pausedQueues = new Set();
+const composerDrafts = new Map();
 const QUEUE_STORAGE_KEY = 'persian-chat-message-queues-v1';
 function persistMessageQueues() {
   try {
@@ -96,7 +97,7 @@ function submitComposerMessage() {
   const queue = messageQueues.get(chat.id) || [];
   queue.push(job); messageQueues.set(chat.id, queue);
   persistMessageQueues();
-  messageInput.value = ''; pendingAttachments = []; voiceDrafts.delete(chat.id);
+  messageInput.value = ''; composerDrafts.delete(chat.id); pendingAttachments = []; voiceDrafts.delete(chat.id);
   renderAttachments(); renderVoiceDraft(); updateCounter(); renderMessageQueue();
   drainMessageQueue(chat.id);
 }
@@ -561,12 +562,14 @@ function renderApp() {
 
 function switchChat(chatId) {
   if (voiceSession) { showToast('اول ضبط ویس را متوقف کن.'); return; }
+  if (activeChatId) composerDrafts.set(activeChatId, messageInput.value);
   activeChatId = chatId;
   const opened = getChatById(chatId);
   if (opened) opened.unreadReply = false;
   chatStore.activeChatId = chatId;
   pendingAttachments = [];
   saveChatStore();
+  messageInput.value = composerDrafts.get(chatId) || '';
   renderApp();
   messageInput.focus();
   if (isProjectChat(getActiveChat())) refreshCodexThread(chatId);
@@ -600,6 +603,7 @@ function addNewChat() {
   activeChatId = chat.id;
   chatStore.activeChatId = chat.id;
   pendingAttachments = [];
+  messageInput.value = '';
   saveChatStore();
   renderApp();
   messageInput.focus();
@@ -807,7 +811,10 @@ fileInput.addEventListener('change', () => {
   fileInput.value = '';
 });
 
-messageInput.addEventListener('input', updateCounter);
+messageInput.addEventListener('input', () => {
+  composerDrafts.set(activeChatId, messageInput.value);
+  updateCounter();
+});
 messageInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
     event.preventDefault();

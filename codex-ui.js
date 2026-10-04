@@ -224,7 +224,7 @@ function renderCodexRequests() {
       ...(request.changes || []).map(change => `${change.path}\n${change.diff || ''}`)].filter(Boolean).join('\n');
     box.append(details);
     const fields = [];
-    for (const question of request.questions) {
+    for (const question of request.questions || []) {
       const label = document.createElement('label');
       label.textContent = question.question;
       const input = document.createElement('input');

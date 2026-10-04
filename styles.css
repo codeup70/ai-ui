@@ -29,7 +29,8 @@
 .voice-tray .ghost { justify-self: start; }
 .voice-timer { color: var(--danger); font-variant-numeric: tabular-nums; font-weight: 850; min-width: 5ch; text-align: center; }
 .project-heading { font-size: 0.8rem; color: var(--primary-2); padding: 8px 3px; overflow-wrap: anywhere; }
-.chat-toolbar-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.chat-toolbar-actions { display: flex; flex-wrap: nowrap; gap: 8px; overflow-x: auto; max-width: 100%; padding-bottom: 2px; }
+.chat-toolbar-actions #projectContextBtn { flex: 0 0 auto; }
 .session-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px; align-items: center; min-width: 0; }
 .session-row > .chat-list-item { min-width: 0; overflow: hidden; }
 .session-row .chat-title { padding-left: 0; }
