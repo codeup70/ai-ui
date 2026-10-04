@@ -2,6 +2,8 @@ import express from 'express';
 import path from 'node:path';
 import { resolveChatWorkspace, isGeneralChat } from './chat-workspace.js';
 import { CodexClient } from './codex-client.js';
+import { approvalModes as validApprovalModes, isReadOnlyCommandRequest, isReadOnlyPermissionRequest } from './approval-policy.js';
+export { isReadOnlyCommand, isReadOnlyPermissionRequest } from './approval-policy.js';
 
 export function summarizeThread(thread) {
   return {
@@ -35,27 +37,6 @@ export function presentItems(turns = []) {
   return { messages, activity: activity.slice(-40) };
 }
 
-export function isReadOnlyCommand(command = '') {
-  const text = String(command).trim().toLowerCase();
-  if (!text) return false;
-  const spreadsheetRead = /\b(?:openpyxl|pandas|read_excel|read_csv|load_workbook|xlsx2csv|csvkit|excel|spreadsheet|workbook)\b/.test(text)
-    && !/\b(?:save|to_excel|to_csv|write|append|remove|delete|unlink|mkdir|makedirs)\b/.test(text);
-  if (spreadsheetRead && !/[|;&<>`]/.test(text)) return true;
-  if (/[|;&<>`]|$\(|\b(?:tee|xargs|python|python3|node|powershell|pwsh|cmd|sh|bash|zsh)\b/.test(text)) return false;
-  if (/\b(insert|update|delete|merge|upsert|create|alter|drop|truncate|grant|revoke|write|append|move|copy|rename|remove|rm|del|set-content|out-file|add-content|git\s+(add|commit|push|reset|checkout|restore)|npm\s+(install|uninstall)|pip\s+install)\b/.test(text)) return false;
-  if (/\b(select|explain|describe|desc|show)\b/.test(text) && /\b(sql|psql|mysql|sqlite|query|database|db)\b/.test(text)) return true;
-  if (/\b(?:xlsx?|csv|spreadsheet|excel|sheet|openpyxl|pandas|read_excel|read_csv)\b/.test(text)) return true;
-  return /^(?:["']?)(?:cat|type|get-content|head|tail|less|more|ls|dir|pwd|whoami|find|rg|grep|git\s+(?:status|diff|log|show|branch|remote\s+-v)|sed\s+-n|awk\b|where\b|which\b|command\s+-v)\b/.test(text);
-}
-
-export function isReadOnlyPermissionRequest(request = {}) {
-  const text = JSON.stringify(request.params || '').toLowerCase()
-    .replace(/"?network(?:access|_access)?"?\s*:\s*(?:false|0|"false")/g, '');
-  if (!text) return false;
-  if (/write|modify|create|delete|remove|network|execute|shell|full.?access/.test(text)) return false;
-  return /read|read.?only|filesystem|file_system|xlsx?|csv|spreadsheet|excel|sheet|openpyxl|read_excel|read_csv/.test(text);
-}
-
 export function installCodexRoutes(app, { client = new CodexClient(), attachmentInput = async () => [] } = {}) {
   const router = express.Router();
   const running = new Map();
@@ -67,18 +48,35 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
   const freshThreads = new Map();
   const approvalModes = new Map();
   const approvalActivity = new Map();
-  const validApprovalModes = new Set(['ask', 'auto-accept', 'auto-decline']);
   const approvalResponse = (request, mode) => {
-    if (request.method === 'item/tool/requestUserInput') return null;
+    if (mode === 'ask' || !validApprovalModes.has(mode) || request.method === 'item/tool/requestUserInput') return null;
     const accept = mode === 'auto-accept';
     if (accept && !(
-      request.method === 'item/commandExecution/requestApproval' && isReadOnlyCommand(request.params.command)
+      request.method === 'item/commandExecution/requestApproval' && isReadOnlyCommandRequest(request)
       || request.method === 'item/permissions/requestApproval' && isReadOnlyPermissionRequest(request)
     )) return null;
     if (request.method === 'item/permissions/requestApproval') {
       return { permissions: accept ? (request.params.permissions || request.params.additionalPermissions || {}) : {}, scope: 'turn' };
     }
     return { decision: accept ? 'accept' : 'decline' };
+  };
+  const applyAutomaticApproval = request => {
+    // Re-read the mode and pending request when the microtask runs: the user
+    // may have changed modes or answered it in the meantime.
+    queueMicrotask(() => {
+      if (!client.requests.has(String(request.id))) return;
+      const mode = approvalModes.get(request.params?.threadId) || 'ask';
+      const result = approvalResponse(request, mode);
+      if (!result) return;
+      try {
+        client.respond(request.id, result);
+        const list = approvalActivity.get(request.params?.threadId) || [];
+        list.push({ id: 'approval-' + request.id,
+          text: (mode === 'auto-accept' ? 'خواندن خودکار: ' : 'رد خودکار: ') + (request.params.command || request.method),
+          status: mode === 'auto-accept' ? 'approved' : 'declined', output: '' });
+        approvalActivity.set(request.params?.threadId, list.slice(-20));
+      } catch (error) { errors.set(request.params?.threadId, error.message); }
+    });
   };
   client.on('notification', ({ method, params: p = {} }) => {
     if (method === 'turn/started') { running.set(p.threadId, p.turn.id); errors.delete(p.threadId); live.set(p.threadId, new Map()); }
@@ -112,18 +110,7 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
       errors.set(request.params?.threadId, 'این ابزار در رابط وب پشتیبانی نمی‌شود: ' + request.method);
       return;
     }
-    const mode = approvalModes.get(request.params?.threadId) || 'ask';
-    const result = approvalResponse(request, mode);
-    if (result) {
-      const list = approvalActivity.get(request.params?.threadId) || [];
-      list.push({ id: `approval-${request.id}`, text: `خواندن خودکار: ${request.params.command || request.method}`, status: 'approved', output: '' });
-      approvalActivity.set(request.params?.threadId, list.slice(-20));
-      // Resolve automatic approvals after the request has been registered by the client.
-      queueMicrotask(() => {
-        try { client.respond(request.id, result); }
-        catch (error) { errors.set(request.params?.threadId, error.message); }
-      });
-    }
+    applyAutomaticApproval(request);
   });
   router.use((req, res, next) => {
     const host = req.hostname;
@@ -166,6 +153,9 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
     const mode = req.body.mode;
     if (!validApprovalModes.has(mode)) throw new Error('حالت اجازه نامعتبر است.');
     approvalModes.set(req.params.id, mode);
+    for (const request of client.requests.values()) {
+      if (request.params?.threadId === req.params.id) applyAutomaticApproval(request);
+    }
     res.json({ mode });
   }));
   router.post('/threads', handle(async (req, res) => {
@@ -211,6 +201,10 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
     const ids = req.body.attachmentIds || [];
     if (!text && !ids.length) throw new Error('پیام خالی است.');
     if (text.length > 100000 || !Array.isArray(ids) || ids.length > 5) throw new Error('حجم پیام یا تعداد فایل‌ها بیش از حد مجاز است.');
+    if (req.body.approvalMode !== undefined) {
+      if (!validApprovalModes.has(req.body.approvalMode)) throw new Error('حالت اجازه نامعتبر است.');
+      approvalModes.set(id, req.body.approvalMode);
+    }
     starting.add(id);
     try {
       const extra = await attachmentInput(ids);
@@ -301,7 +295,7 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
     } else {
       if (!['accept', 'decline'].includes(req.body.decision)) throw new Error('تصمیم نامعتبر است.');
       if (request.method === 'item/permissions/requestApproval') {
-        result = { permissions: req.body.decision === 'accept' ? request.params.permissions : {}, scope: 'turn' };
+        result = { permissions: req.body.decision === 'accept' ? (request.params.permissions || request.params.additionalPermissions || {}) : {}, scope: 'turn' };
       } else result = { decision: req.body.decision };
     }
     client.respond(req.params.requestId, result);

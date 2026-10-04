@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { ClaudeClient } from './claude-client.js';
+import { approvalModes as validApprovalModes, isReadOnlyTool } from './approval-policy.js';
 import { resolveChatWorkspace, isGeneralChat } from './chat-workspace.js';
 
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -27,9 +28,11 @@ function summary(info) {
 export function installClaudeRoutes(app, { client = new ClaudeClient(), attachmentInput = async () => [],
   stateFile = path.resolve('.claude-ui-state.json') } = {}) {
   const router = express.Router(), states = new Map(), drafts = new Map(), approvalModes = new Map();
-  const isReadOnlyTool = (name = '', input = {}) => {
-    if (!['read', 'glob', 'grep', 'ls'].includes(String(name).toLowerCase())) return false;
-    return !/write|edit|modify|create|delete|remove|move|copy|bash|shell|command|network/.test(JSON.stringify(input).toLowerCase());
+  const automaticToolResult = (name, input, mode) => {
+    if (name === 'AskUserQuestion') return null;
+    if (mode === 'auto-decline') return { behavior: 'deny', message: 'اجازهٔ خودکار رد شد.' };
+    if (mode === 'auto-accept' && isReadOnlyTool(name, input)) return { behavior: 'allow', updatedInput: input };
+    return null;
   };
   let archiveIds = new Set();
   const archiveReady = fs.readFile(stateFile, 'utf8').then(raw => { archiveIds = new Set(JSON.parse(raw).archived || []); }).catch(error => {
@@ -91,8 +94,12 @@ export function installClaudeRoutes(app, { client = new ClaudeClient(), attachme
     res.json({ mode: approvalModes.get(req.params.id) || 'ask' });
   }));
   router.post('/threads/:id/approval-mode', handle(async (req, res) => {
-    if (!['ask', 'auto-accept', 'auto-decline'].includes(req.body.mode)) throw new Error('حالت اجازه نامعتبر است.');
+    if (!validApprovalModes.has(req.body.mode)) throw new Error('حالت اجازه نامعتبر است.');
     approvalModes.set(req.params.id, req.body.mode);
+    for (const request of states.get(req.params.id)?.requests.values() || []) {
+      const result = automaticToolResult(request.name, request.input, req.body.mode);
+      if (result) request.done(result);
+    }
     res.json({ mode: req.body.mode });
   }));
   router.post('/threads/:id/turns', handle(async (req, res) => {
@@ -101,6 +108,10 @@ export function installClaudeRoutes(app, { client = new ClaudeClient(), attachme
     const context = typeof req.body.projectContext === 'string' ? req.body.projectContext.trim().slice(0, 12000) : '';
     const text = req.body.text || '', ids = req.body.attachmentIds || [], model = req.body.model;
     if (typeof text !== 'string' || !Array.isArray(ids) || ids.length > 5 || (!text.trim() && !ids.length)) throw new Error('پیام نامعتبر است.');
+    if (req.body.approvalMode !== undefined) {
+      if (!validApprovalModes.has(req.body.approvalMode)) throw new Error('حالت اجازه نامعتبر است.');
+      approvalModes.set(id, req.body.approvalMode);
+    }
     const state = { running: true, requests: new Map(), records: [], partial: '', model, controller: new AbortController() };
     states.set(id, state);
     try {
@@ -120,11 +131,9 @@ export function installClaudeRoutes(app, { client = new ClaudeClient(), attachme
           if (options.signal.aborted || state.controller.signal.aborted) return abort();
           options.signal.addEventListener('abort', abort, { once: true });
           const mode = approvalModes.get(id) || 'ask';
-          if (!questions.length && (mode === 'auto-decline' || mode === 'auto-accept' && isReadOnlyTool(name, input))) {
-            options.signal.removeEventListener('abort', abort);
-            return resolve(mode === 'auto-accept' ? { behavior: 'allow', updatedInput: input } : { behavior: 'deny', message: 'اجازهٔ خودکار رد شد.' });
-          }
-          state.requests.set(requestId, { input, done, public: { id: requestId,
+          const automatic = automaticToolResult(name, input, mode);
+          if (automatic) return done(automatic);
+          state.requests.set(requestId, { name, input, done, public: { id: requestId,
             method: questions.length ? 'item/tool/requestUserInput' : 'claude/tool/approval',
             reason: name, command: JSON.stringify(input, null, 2), cwd: info.cwd, questions } });
         }) });

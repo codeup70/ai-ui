@@ -167,3 +167,78 @@ test('failed send restores voice and typed text; missing transcript cannot be se
   assert.equal(h.run('messageInput.value'), 'context');
   assert.equal(h.run('getActiveChat().messages.length'), 0);
 });
+
+function approvalChat(h, source = 'codex') {
+  h.run("codexChats.push({ ...normalizeChat({id: 'project_test', title: 'Test'}), source: '" + source + "', threadId: 'test', cwd: 'D:/project' }); activeChatId = 'project_test'; codexApprovalModes['" + source + ":test'] = 'auto-accept'; refreshCodexThread = async () => {};");
+}
+
+test('a project send awaits an in-flight approval sync and includes its confirmed mode', async () => {
+  const h = harness(); await h.run('voiceReady'); approvalChat(h);
+  let finishSync, posts = 0;
+  const turns = [];
+  h.ctx.projectApi = async (_chat, url, body) => {
+    if (url.endsWith('/approval-mode')) {
+      if (!body) return { mode: 'ask' };
+      posts++;
+      return new Promise(resolve => { finishSync = () => resolve({ mode: body.mode }); });
+    }
+    turns.push(body); return {};
+  };
+  const sync = h.run('ensureCodexApprovalMode(getActiveChat())');
+  await settle();
+  const send = h.run("sendCodexMessage({chatId: activeChatId, typedText: 'read', attachments: []})");
+  await settle();
+  assert.equal(turns.length, 0);
+  assert.equal(posts, 1);
+  assert.equal(h.elements.get('codexApprovalMode').disabled, true);
+  finishSync();
+  await Promise.all([sync, send]);
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0].approvalMode, 'auto-accept');
+});
+
+test('failed approval sync blocks the turn and retains its queued message', async () => {
+  const h = harness(); await h.run('voiceReady'); approvalChat(h, 'claude');
+  let turns = 0;
+  h.ctx.projectApi = async (_chat, url) => {
+    if (url.endsWith('/approval-mode')) throw new Error('offline');
+    turns++; return {};
+  };
+  await h.run("sendCodexMessage({chatId: activeChatId, typedText: 'keep me', attachments: []})");
+  assert.equal(turns, 0);
+  assert.equal(h.run('messageQueues.get(activeChatId)[0].typedText'), 'keep me');
+  assert.equal(h.run('pausedQueues.has(activeChatId)'), true);
+  assert.match(h.run('getActiveChat().approvalError'), /offline/);
+});
+
+test('a mode change during synchronization is serialized and the last selection wins', async () => {
+  const h = harness(); await h.run('voiceReady'); approvalChat(h);
+  let release, serverMode = 'ask';
+  const written = [];
+  h.ctx.projectApi = async (_chat, _url, body) => {
+    if (!body) return { mode: serverMode };
+    written.push(body.mode);
+    if (body.mode === 'auto-accept') await new Promise(resolve => { release = resolve; });
+    serverMode = body.mode;
+    return { mode: serverMode };
+  };
+  const old = h.run('ensureCodexApprovalMode(getActiveChat())');
+  await settle();
+  const changed = h.run("changeCodexApprovalMode('auto-decline')");
+  release(); await Promise.all([old, changed]);
+  assert.deepEqual(written, ['auto-accept', 'auto-decline']);
+  assert.equal(h.run("codexApprovalModes['codex:test']"), 'auto-decline');
+  assert.equal(h.elements.get('codexApprovalMode').value, 'auto-decline');
+});
+
+test('failed mode selection rolls the dropdown back and displays an error', async () => {
+  const h = harness(); await h.run('voiceReady'); approvalChat(h);
+  h.ctx.projectApi = async (_chat, _url, body) => {
+    if (!body) return { mode: 'auto-accept' };
+    throw new Error('mode rejected');
+  };
+  await h.run("changeCodexApprovalMode('ask')");
+  assert.equal(h.elements.get('codexApprovalMode').value, 'auto-accept');
+  assert.match(h.elements.get('codexApprovalMode').title, /mode rejected/);
+  assert.equal(h.elements.get('codexApprovalMode').disabled, false);
+});

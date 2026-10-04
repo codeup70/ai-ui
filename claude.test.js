@@ -97,3 +97,41 @@ test('Claude history excludes reasoning and nested tool messages', () => {
   assert.deepEqual(result.messages, [{ id: 'one', role: 'assistant', content: 'visible' }]);
   assert.equal(result.activity[0].text, 'Read');
 });
+
+test('Claude automatic mode reads files and shell output but keeps edits and questions pending', async t => {
+  const { client, request } = await harness(t);
+  assert.equal((await request('/threads/' + id + '/turns', { text: 'read', approvalMode: 'invalid' })).status, 400);
+  assert.equal(client.calls.length, 0);
+  await request('/threads/' + id + '/turns', { text: 'read', approvalMode: 'auto-accept' });
+  await settle();
+  const signal = client.options.abortController.signal;
+  for (const [name, input] of [
+    ['Read', { file_path: 'command-handler.js' }],
+    ['Grep', { pattern: 'write' }],
+    ['Bash', { command: 'cat README.md | head -n 20' }],
+  ]) assert.equal((await client.options.canUseTool(name, input, { signal })).behavior, 'allow');
+  const edit = client.options.canUseTool('Edit', { file_path: 'read.md' }, { signal });
+  const question = client.options.canUseTool('AskUserQuestion', { questions: [{ question: 'Continue?' }] }, { signal });
+  const malformedQuestion = client.options.canUseTool('AskUserQuestion', { questions: [] }, { signal });
+  assert.equal((await request('/threads/' + id)).data.requests.length, 3);
+  await request('/threads/' + id + '/approval-mode', { mode: 'auto-decline' });
+  assert.equal((await edit).behavior, 'deny');
+  assert.equal((await request('/threads/' + id)).data.requests.length, 2);
+  await request('/threads/' + id + '/interrupt', {});
+  await Promise.all([question, malformedQuestion]);
+});
+
+test('changing Claude mode releases an already pending read without approving an edit', async t => {
+  const { client, request } = await harness(t);
+  await request('/threads/' + id + '/turns', { text: 'read', approvalMode: 'ask' });
+  await settle();
+  const signal = client.options.abortController.signal;
+  const read = client.options.canUseTool('Bash', { command: 'git status; git diff --stat' }, { signal });
+  const edit = client.options.canUseTool('Write', { file_path: 'read.txt', content: 'x' }, { signal });
+  assert.equal((await request('/threads/' + id)).data.requests.length, 2);
+  await request('/threads/' + id + '/approval-mode', { mode: 'auto-accept' });
+  assert.equal((await read).behavior, 'allow');
+  assert.equal((await request('/threads/' + id)).data.requests.length, 1);
+  await request('/threads/' + id + '/interrupt', {});
+  assert.equal((await edit).behavior, 'deny');
+});

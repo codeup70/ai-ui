@@ -91,7 +91,8 @@ test('approval mode can auto-accept or auto-decline tool approvals while questio
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(client.responses.some(item => item.id === 9), false);
   assert.equal(isReadOnlyCommand('git status'), true);
-  assert.equal(isReadOnlyCommand('psql -c "SELECT * FROM users"'), true);
+  // Arbitrary SQL can call writing functions; it needs explicit permission.
+  assert.equal(isReadOnlyCommand('psql -c "SELECT * FROM users"'), false);
   assert.equal(isReadOnlyCommand('psql -c "UPDATE users SET name = \'x\'"'), false);
   assert.equal(isReadOnlyPermissionRequest({ params: { permissions: { fileSystem: { read: ['report.xlsx'] } } } }), true);
   assert.equal(isReadOnlyPermissionRequest({ params: { permissions: { fileSystem: { write: ['report.xlsx'] } } } }), false);
@@ -134,4 +135,57 @@ test('delete requires matching explicit confirmation and blocks running threads'
   const count = client.calls.length;
   assert.equal((await post('/threads/thread-original/delete', { confirmedThreadId: 'thread-original' })).status, 409);
   assert.equal(client.calls.length, count);
+});
+
+test('manual Codex mode leaves actual emitted command, file and permission requests pending', async t => {
+  const { client, post } = await server(t);
+  const requests = [
+    { id: 'manual-command', method: 'item/commandExecution/requestApproval', params: { threadId: 'thread-original', command: 'Get-Content README.md' } },
+    { id: 'manual-file', method: 'item/fileChange/requestApproval', params: { threadId: 'thread-original' } },
+    { id: 'manual-permissions', method: 'item/permissions/requestApproval', params: { threadId: 'thread-original', permissions: { fileSystem: { read: ['x'] } } } },
+  ];
+  for (const request of requests) {
+    client.requests.set(request.id, request); client.emit('request', request);
+  }
+  await new Promise(setImmediate);
+  assert.equal(client.responses.length, 0);
+  assert.equal(client.requests.size, 3);
+  await post('/threads/thread-original/requests/manual-command', { decision: 'accept' });
+  assert.equal(client.responses.length, 1);
+});
+
+test('changing Codex mode applies to pending reads but leaves edits and questions for the user', async t => {
+  const { client, post } = await server(t);
+  const requests = [
+    { id: 'read', method: 'item/commandExecution/requestApproval', params: { threadId: 'thread-original', command: 'powershell.exe -Command "Get-ChildItem | Select-Object Name"' } },
+    { id: 'edit', method: 'item/fileChange/requestApproval', params: { threadId: 'thread-original' } },
+    { id: 'question', method: 'item/tool/requestUserInput', params: { threadId: 'thread-original', questions: [] } },
+    { id: 'other', method: 'item/commandExecution/requestApproval', params: { threadId: 'other-thread', command: 'git status' } },
+  ];
+  for (const request of requests) { client.requests.set(request.id, request); client.emit('request', request); }
+  await new Promise(setImmediate);
+  await post('/threads/thread-original/approval-mode', { mode: 'auto-accept' });
+  await new Promise(setImmediate);
+  assert.deepEqual(client.responses.map(r => r.id), ['read']);
+  assert.equal(client.responses[0].result.decision, 'accept');
+  await post('/threads/thread-original/approval-mode', { mode: 'auto-decline' });
+  await new Promise(setImmediate);
+  assert.equal(client.responses.at(-1).id, 'edit');
+  assert.equal(client.responses.at(-1).result.decision, 'decline');
+  assert.equal(client.requests.has('question'), true);
+  assert.equal(client.requests.has('other'), true);
+});
+
+test('Codex accepts a validated approval mode with the turn after a server restart', async t => {
+  const { client, post } = await server(t);
+  assert.equal((await post('/threads/thread-original/turns', { text: 'read', approvalMode: 'invalid' })).status, 400);
+  assert.equal(client.calls.length, 0);
+  assert.equal((await post('/threads/thread-original/turns', { text: 'read', approvalMode: 'auto-accept' })).status, 200);
+  const turn = client.calls.find(c => c.method === 'turn/start').params;
+  assert.deepEqual(turn.sandboxPolicy, { type: 'readOnly', networkAccess: false });
+  assert.equal(turn.approvalPolicy, 'on-request');
+  const request = { id: 'restart-read', method: 'item/commandExecution/requestApproval', params: { threadId: 'thread-original', command: 'Get-ChildItem' } };
+  client.requests.set(request.id, request); client.emit('request', request);
+  await new Promise(setImmediate);
+  assert.equal(client.responses.at(-1).result.decision, 'accept');
 });

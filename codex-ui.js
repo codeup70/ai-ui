@@ -3,7 +3,9 @@ const codexVoiceClips = new Map();
 const CODEX_APPROVAL_MODES_KEY = 'persian-approval-modes-v2';
 let codexApprovalModes = {};
 try { codexApprovalModes = JSON.parse(localStorage.getItem(CODEX_APPROVAL_MODES_KEY) || '{}'); } catch { codexApprovalModes = {}; }
-const codexApprovalSyncing = new Set();
+if (!codexApprovalModes || typeof codexApprovalModes !== 'object' || Array.isArray(codexApprovalModes)) codexApprovalModes = {};
+const codexApprovalSyncing = new Map();
+const codexApprovalChanges = new Map();
 let codexRefreshing = false;
 const codexThreadRefreshes = new Set();
 let codexRequestSignature = '';
@@ -12,6 +14,11 @@ let codexListVersion = 0;
 function isProjectChat(chat) { return chat?.source === 'codex' || chat?.source === 'claude'; }
 function agentName(chat) { return chat?.source === 'claude' ? 'Claude' : 'Codex'; }
 function projectApi(chat, url, body) { return codexApi(url, body, chat.source); }
+function desiredApprovalMode(chat) {
+  const key = chat.source + ':' + chat.threadId;
+  const mode = codexApprovalChanges.get(key)?.mode || codexApprovalModes[key];
+  return ['ask', 'auto-accept', 'auto-decline'].includes(mode) ? mode : 'ask';
+}
 function syncCodexApprovalMode() {
   const chat = getActiveChat();
   const label = document.getElementById('codexApprovalLabel');
@@ -19,31 +26,63 @@ function syncCodexApprovalMode() {
   if (!label || !select) return;
   const visible = isProjectChat(chat);
   label.hidden = !visible;
-  if (visible) select.value = codexApprovalModes[`${chat.source}:${chat.threadId}`] || 'ask';
+  if (visible) {
+    const key = chat.source + ':' + chat.threadId;
+    select.value = desiredApprovalMode(chat);
+    select.disabled = codexApprovalSyncing.has(key) || codexApprovalChanges.has(key);
+    select.title = chat.approvalError || (select.disabled ? 'در حال اعمال دسترسی…' : '');
+    select.setAttribute('aria-invalid', chat.approvalError ? 'true' : 'false');
+  }
 }
 async function ensureCodexApprovalMode(chat) {
-  if (!chat || !isProjectChat(chat) || !chat.threadId || codexApprovalSyncing.has(`${chat.source}:${chat.threadId}`)) return;
-  const key = `${chat.source}:${chat.threadId}`;
-  const desired = codexApprovalModes[key];
-  if (!desired) return;
-  codexApprovalSyncing.add(key);
+  if (!chat || !isProjectChat(chat) || !chat.threadId) return 'ask';
+  const key = chat.source + ':' + chat.threadId;
+  if (codexApprovalSyncing.has(key)) return codexApprovalSyncing.get(key);
+  const task = (async () => {
+    let desired;
+    do {
+      desired = desiredApprovalMode(chat);
+      const url = '/threads/' + encodeURIComponent(chat.threadId) + '/approval-mode';
+      let current = await projectApi(chat, url);
+      if (current.mode !== desired) current = await projectApi(chat, url, { mode: desired });
+      if (current.mode !== desired) throw new Error('سرور حالت انتخاب‌شده را تأیید نکرد.');
+    } while (desired !== desiredApprovalMode(chat));
+    return desired;
+  })();
+  codexApprovalSyncing.set(key, task);
+  syncCodexApprovalMode();
   try {
-    const current = await projectApi(chat, `/threads/${encodeURIComponent(chat.threadId)}/approval-mode`);
-    if (current.mode !== desired) await projectApi(chat, `/threads/${encodeURIComponent(chat.threadId)}/approval-mode`, { mode: desired });
-  } catch { /* Older servers keep the manual mode; sending remains safe. */ }
-  finally { codexApprovalSyncing.delete(key); }
+    const mode = await task;
+    chat.approvalError = '';
+    chat.approvalWarning = '';
+    return mode;
+  } catch (error) {
+    chat.approvalError = 'اعمال حالت دسترسی ناموفق بود: ' + error.message;
+    throw new Error(chat.approvalError);
+  } finally {
+    codexApprovalSyncing.delete(key);
+    syncCodexApprovalMode();
+  }
 }
 async function changeCodexApprovalMode(mode) {
   const chat = getActiveChat();
-  if (!chat || !isProjectChat(chat)) return;
+  if (!chat || !isProjectChat(chat) || !['ask', 'auto-accept', 'auto-decline'].includes(mode)) return;
+  const key = chat.source + ':' + chat.threadId;
+  const change = { mode };
+  codexApprovalChanges.set(key, change);
+  syncCodexApprovalMode();
   try {
-    await projectApi(chat, `/threads/${encodeURIComponent(chat.threadId)}/approval-mode`, { mode });
-    codexApprovalModes[`${chat.source}:${chat.threadId}`] = mode;
-    localStorage.setItem(CODEX_APPROVAL_MODES_KEY, JSON.stringify(codexApprovalModes));
+    await ensureCodexApprovalMode(chat);
+    if (codexApprovalChanges.get(key) !== change) return;
+    codexApprovalModes[key] = mode;
+    try { localStorage.setItem(CODEX_APPROVAL_MODES_KEY, JSON.stringify(codexApprovalModes)); }
+    catch { showToast('حالت اعمال شد، اما ذخیرهٔ تنظیمات مرورگر ناموفق بود.'); }
     showToast(mode === 'auto-accept' ? 'خواندن خودکار شد؛ تغییرات هنوز اجازه می‌خواهند.' : mode === 'auto-decline' ? 'رد خودکار فعال شد.' : 'برای هر درخواست اجازه می‌پرسد.');
   } catch (error) {
-    syncCodexApprovalMode();
     showToast(error.message);
+  } finally {
+    if (codexApprovalChanges.get(key) === change) codexApprovalChanges.delete(key);
+    syncCodexApprovalMode();
   }
 }
 async function codexApi(url, body, source = 'codex') {
@@ -142,7 +181,10 @@ async function refreshCodexThread(chatId) {
   if (!chat || codexThreadRefreshes.has(chatId)) return;
   codexThreadRefreshes.add(chatId);
   try {
-    ensureCodexApprovalMode(chat);
+    ensureCodexApprovalMode(chat).catch(error => {
+      if (chat.approvalWarning !== error.message && chat.id === activeChatId) showToast(error.message);
+      chat.approvalWarning = error.message;
+    });
     const data = await projectApi(chat, '/threads/' + encodeURIComponent(chat.threadId));
     for (const clip of codexVoiceClips.values()) {
       if (clip.threadId !== chat.threadId) continue;
@@ -268,7 +310,8 @@ async function sendCodexMessage(job) {
   sendingChatIds.add(chat.id);
   syncComposerState();
   try {
-    await projectApi(chat, `/threads/${encodeURIComponent(chat.threadId)}/turns`, { text, attachmentIds: attachments.map(a => a.id), model: job?.model ?? chat.model ?? '', projectContext: job?.projectContext || chat.projectContext || '' });
+    const approvalMode = await ensureCodexApprovalMode(chat);
+    await projectApi(chat, `/threads/${encodeURIComponent(chat.threadId)}/turns`, { text, approvalMode, attachmentIds: attachments.map(a => a.id), model: job?.model ?? chat.model ?? '', projectContext: job?.projectContext || chat.projectContext || '' });
     chat.lastMessageAt = nowIso();
     renderChatList();
     if (chat.archived) { chat.archived = false; codexListVersion++; refreshCodexSessions(); }
