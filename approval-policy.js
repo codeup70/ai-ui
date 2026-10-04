@@ -1,7 +1,9 @@
 // Classify only static, understood reads. Unknown commands remain interactive.
 // This parser never runs a command. It deliberately rejects shell expansion,
 // scripts, redirects and ambiguous syntax rather than guessing from filenames.
-export const approvalModes = new Set(['ask', 'auto-accept', 'auto-decline']);
+// Legacy modes remain valid for saved preferences, without increasing access.
+export const approvalModes = new Set(['ask', 'auto-accept', 'auto-decline', 'default', 'acceptEdits', 'auto', 'plan', 'bypassPermissions']);
+export const codexApprovalModes = new Set(['ask', 'auto-accept', 'auto-decline', 'workspace-auto', 'default', 'acceptEdits', 'bypassPermissions']);
 
 function tokenize(command) {
   const tokens = [];

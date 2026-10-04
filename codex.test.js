@@ -10,8 +10,10 @@ class FakeClient extends EventEmitter {
   async connect() {}
   async request(method, params) {
     this.calls.push({ method, params });
-    const thread = { id: 'thread-original', cwd: 'D:\\Project\\original', name: 'Original', createdAt: 1, updatedAt: 2,
+    const thread = { id: 'thread-original', cwd: this.cwd ?? 'D:\\Project\\original', name: this.name || 'Original', createdAt: 1, updatedAt: 2,
       status: { type: 'idle' }, turns: [{ items: [{ type: 'userMessage', id: 'u', content: [{ type: 'text', text: '<script>history</script>' }] }] }] };
+    if (method === 'thread/name/set') { this.name = params.name; return {}; }
+    if (method === 'thread/fork') return { thread: { ...thread, id: 'thread-copy' } };
     if (method === 'thread/list') return { data: [thread], nextCursor: 'page2' };
     if (method === 'thread/start') return { thread: { ...thread, id: 'thread-new', cwd: params.cwd, turns: [] } };
     if (method === 'thread/read' && this.emptyHistory && params.threadId === 'thread-new' && params.includeTurns) {
@@ -34,7 +36,7 @@ async function server(t) {
   await new Promise(resolve => http.once('listening', resolve));
   t.after(() => { http.closeAllConnections(); http.close(); });
   const url = `http://127.0.0.1:${http.address().port}/api/codex`;
-  const post = (route, body, headers = {}) => fetch(url + route, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+  const post = (route, body, headers = {}) => fetch(url + route, { method: 'POST', headers: { 'Content-Type': 'application/json', Connection: 'close', ...headers }, body: JSON.stringify(body) });
   return { client, url, post };
 }
 test('new Codex thread opens before history exists and sends without resuming an unpersisted thread', async t => {
@@ -188,4 +190,113 @@ test('Codex accepts a validated approval mode with the turn after a server resta
   client.requests.set(request.id, request); client.emit('request', request);
   await new Promise(setImmediate);
   assert.equal(client.responses.at(-1).result.decision, 'accept');
+});
+
+test('workspace automation uses the original project sandbox and keeps network restricted', async t => {
+  const { client, post } = await server(t);
+  client.cwd = process.cwd();
+  assert.equal((await post('/threads/thread-original/turns', { text: 'edit', approvalMode: 'workspace-auto', cwd: 'ignored-untrusted-path' })).status, 200);
+  const turn = client.calls.find(c => c.method === 'turn/start').params;
+  assert.equal(turn.approvalPolicy, 'on-request');
+  assert.deepEqual(turn.sandboxPolicy, { type: 'workspaceWrite', writableRoots: [process.cwd()], networkAccess: false });
+  const request = { id: 'outside-workspace', method: 'item/commandExecution/requestApproval',
+    params: { threadId: 'thread-original', command: 'Get-Content outside.txt', networkApprovalContext: { host: 'example.com' } } };
+  client.requests.set(request.id, request); client.emit('request', request);
+  await new Promise(setImmediate);
+  assert.equal(client.responses.length, 0);
+  assert.equal(client.requests.has(request.id), true);
+});
+
+test('switching back from workspace automation restores the read-only policy on the next turn', async t => {
+  const { client, post } = await server(t);
+  client.cwd = process.cwd();
+  await post('/threads/thread-original/approval-mode', { mode: 'workspace-auto' });
+  await post('/threads/thread-original/approval-mode', { mode: 'auto-accept' });
+  await post('/threads/thread-original/turns', { text: 'read' });
+  assert.deepEqual(client.calls.find(c => c.method === 'turn/start').params.sandboxPolicy, { type: 'readOnly', networkAccess: false });
+});
+
+test('workspace automation never falls back to the web app directory when cwd is missing', async t => {
+  const { client, post } = await server(t);
+  client.cwd = '';
+  const response = await post('/threads/thread-original/turns', { text: 'edit', approvalMode: 'workspace-auto' });
+  assert.equal(response.status, 400);
+  assert.equal(client.calls.some(c => c.method === 'turn/start'), false);
+});
+
+for (const mode of ['default', 'acceptEdits', 'bypassPermissions']) {
+  test('native Codex policy on fresh and resumed turns: ' + mode, async t => {
+    for (const fresh of [false, true]) {
+      const { client, post } = await server(t); client.cwd = process.cwd();
+      const threadId = fresh ? (await (await post('/threads', { cwd: process.cwd() })).json()).thread.id : 'thread-original';
+      assert.equal((await post('/threads/' + threadId + '/turns', { text: 'test', approvalMode: mode })).status, 200);
+      const policy = client.calls.find(c => c.method === 'turn/start').params;
+      assert.equal(policy.approvalPolicy, mode === 'default' ? 'on-request' : 'never');
+      assert.deepEqual(policy.sandboxPolicy, mode === 'bypassPermissions' ? { type: 'dangerFullAccess' } :
+        { type: 'workspaceWrite', writableRoots: [process.cwd()], networkAccess: false });
+      const pending = { id: 'q', method: 'item/tool/requestUserInput', params: { threadId, questions: [] } };
+      client.requests.set('q', pending); client.emit('request', pending);
+      await new Promise(setImmediate); assert.equal(client.responses.length, 0);
+    }
+  });
+}
+test('Codex full access can be narrowed on next turn and rejects Claude-only modes', async t => {
+  const { client, post } = await server(t); client.cwd = process.cwd();
+  await post('/threads/thread-original/turns', { text: 'first', approvalMode: 'bypassPermissions' });
+  client.emit('notification', { method: 'turn/completed', params: { threadId: 'thread-original', turn: { id: 'turn-1' } } });
+  assert.equal((await post('/threads/thread-original/turns', { text: 'second', approvalMode: 'default' })).status, 200);
+  assert.equal(client.calls.filter(c => c.method === 'turn/start').at(-1).params.sandboxPolicy.type, 'workspaceWrite');
+  assert.equal((await post('/threads/thread-original/approval-mode', { mode: 'plan' })).status, 400);
+});
+
+test('renaming Codex uses native title API and survives history reload', async t => {
+  const { client, post, url } = await server(t);
+  assert.equal((await post('/threads/thread-original/title', { title: '  My title  ' })).status, 200);
+  assert.deepEqual(client.calls.find(c => c.method === 'thread/name/set').params, { threadId: 'thread-original', name: 'My title' });
+  assert.equal((await (await fetch(url + '/threads/thread-original')).json()).title, 'My title');
+  const count = client.calls.length;
+  for (const title of ['', '  ', 'x'.repeat(121), 'a\nb', 123]) assert.equal((await post('/threads/thread-original/title', { title })).status, 400);
+  assert.equal(client.calls.length, count);
+  assert.equal((await post('/threads/thread-original/title', { title: 'bad' }, { Origin: 'https://example.com' })).status, 403);
+});
+
+test('Codex fork preserves original project and history, sets model, and does not start a turn', async t => {
+  const { client, post } = await server(t);
+  const result = await post('/threads/thread-original/fork', { title: 'Branch', model: 'model-b' });
+  assert.equal(result.status, 200); assert.equal((await result.json()).thread.id, 'thread-copy');
+  assert.deepEqual(client.calls.find(c => c.method === 'thread/fork').params,
+    { threadId: 'thread-original', cwd: 'D:\\Project\\original', deferGoalContinuation: true, model: 'model-b' });
+  assert.equal(client.calls.some(c => c.method === 'turn/start' || c.method === 'thread/delete'), false);
+  assert.deepEqual(client.calls.find(c => c.method === 'thread/name/set').params, { threadId: 'thread-copy', name: 'Branch' });
+  assert.equal((await post('/threads/thread-original/fork', { title: ' ' })).status, 400);
+  await post('/threads/thread-original/turns', { text: 'busy' });
+  const count = client.calls.length;
+  assert.equal((await post('/threads/thread-original/fork', { title: 'Busy' })).status, 409);
+  assert.equal(client.calls.length, count);
+});
+test('Codex fork returns created session if optional naming fails', async t => {
+  const { client, post } = await server(t);
+  const original = client.request.bind(client);
+  client.request = (method, params) => { if (method === 'thread/name/set') throw Error('name failed'); return original(method, params); };
+  const response = await post('/threads/thread-original/fork', { title: 'Copy' });
+  const data = await response.json();
+  assert.equal(response.status, 200); assert.equal(data.thread.id, 'thread-copy'); assert.ok(data.warning);
+});
+
+test('Codex idle history restores usage and avoids stale totals while disk catches up', async t => {
+  const fs = await import('node:fs/promises'), os = await import('node:os'), path = await import('node:path');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-usage-route-'));
+  t.after(() => fs.rm(dir, { recursive:true, force:true }));
+  const file = path.join(dir, 'history.jsonl');
+  const row = input => JSON.stringify({type:'event_msg',payload:{type:'token_count',info:{total_token_usage:{input_tokens:input,output_tokens:4}}}});
+  await fs.writeFile(file, row(20) + '\n');
+  const { client, url } = await server(t);
+  const request = client.request.bind(client);
+  client.request = async (method, params) => { const data=await request(method, params); if(data.thread) data.thread.path=file; return data; };
+  const read = async () => (await (await fetch(url + '/threads/thread-original')).json()).usage.total;
+  assert.equal((await read()).totalTokens, 24);
+  client.emit('notification', {method:'thread/tokenUsage/updated',params:{threadId:'thread-original',tokenUsage:{total:{inputTokens:30,outputTokens:4,totalTokens:34}}}});
+  assert.equal((await read()).totalTokens, 34);
+  await fs.appendFile(file, row(40) + '\n');
+  assert.equal((await read()).totalTokens, 44);
 });

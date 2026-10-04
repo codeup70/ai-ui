@@ -14,10 +14,13 @@ let codexListVersion = 0;
 function isProjectChat(chat) { return chat?.source === 'codex' || chat?.source === 'claude'; }
 function agentName(chat) { return chat?.source === 'claude' ? 'Claude' : 'Codex'; }
 function projectApi(chat, url, body) { return codexApi(url, body, chat.source); }
+function availableApprovalModes(chat) {
+  return chat?.source === 'codex' ? ['default', 'acceptEdits', 'bypassPermissions', 'ask', 'auto-accept', 'workspace-auto', 'auto-decline'] : ['default', 'acceptEdits', 'auto', 'plan', 'bypassPermissions', 'ask', 'auto-accept', 'auto-decline'];
+}
 function desiredApprovalMode(chat) {
   const key = chat.source + ':' + chat.threadId;
   const mode = codexApprovalChanges.get(key)?.mode || codexApprovalModes[key];
-  return ['ask', 'auto-accept', 'auto-decline'].includes(mode) ? mode : 'ask';
+  return availableApprovalModes(chat).includes(mode) ? mode : 'ask';
 }
 function syncCodexApprovalMode() {
   const chat = getActiveChat();
@@ -26,11 +29,27 @@ function syncCodexApprovalMode() {
   if (!label || !select) return;
   const visible = isProjectChat(chat);
   label.hidden = !visible;
+  const currentMode = visible ? desiredApprovalMode(chat) : 'ask';
+  const workspaceOption = document.getElementById('workspaceApprovalOption');
+  if (workspaceOption) { workspaceOption.hidden = chat?.source !== 'codex'; workspaceOption.disabled = chat?.source !== 'codex'; }
+  for (const option of Array.from(select.options || [])) {
+    const legacy = ['ask', 'auto-accept', 'auto-decline', 'workspace-auto'].includes(option.value);
+    const supported = availableApprovalModes(chat).includes(option.value);
+    option.hidden = !supported || (legacy && option.value !== currentMode);
+    option.disabled = !supported;
+  }
+  const descriptions = {
+    default: chat?.source === 'codex' ? 'اجرا در پروژه؛ خروج از محدوده با تأیید شما.' : 'مجوزهای استاندارد Claude؛ عملیات حساس با تأیید شما.',
+    acceptEdits: chat?.source === 'codex' ? 'اجرا و ویرایش داخل پروژه بدون سؤال؛ شبکه و خروج از محدوده مسدود است.' : 'ویرایش فایل بدون سؤال؛ فرمان‌های حساس ممکن است تأیید بخواهند.',
+    auto: 'تصمیم‌گیری خودکار Claude دربارهٔ مجوزها؛ نیازمند پشتیبانی مدل و حساب.',
+    plan: 'بررسی و برنامه‌ریزی؛ شروع اجرا با تأیید شما.',
+    bypassPermissions: 'دسترسی کامل به فایل‌ها، فرمان‌ها و شبکه بدون تأیید ابزار.',
+  };
   if (visible) {
     const key = chat.source + ':' + chat.threadId;
     select.value = desiredApprovalMode(chat);
     select.disabled = codexApprovalSyncing.has(key) || codexApprovalChanges.has(key);
-    select.title = chat.approvalError || (select.disabled ? 'در حال اعمال دسترسی…' : '');
+    select.title = chat.approvalError || (select.disabled ? 'در حال اعمال دسترسی…' : (descriptions[select.value] || 'حالت قدیمی؛ برای رفتار جدید یکی از حالت‌های بومی را انتخاب کن.'));
     select.setAttribute('aria-invalid', chat.approvalError ? 'true' : 'false');
   }
 }
@@ -66,7 +85,7 @@ async function ensureCodexApprovalMode(chat) {
 }
 async function changeCodexApprovalMode(mode) {
   const chat = getActiveChat();
-  if (!chat || !isProjectChat(chat) || !['ask', 'auto-accept', 'auto-decline'].includes(mode)) return;
+  if (!chat || !isProjectChat(chat) || !availableApprovalModes(chat).includes(mode)) return;
   const key = chat.source + ':' + chat.threadId;
   const change = { mode };
   codexApprovalChanges.set(key, change);
@@ -77,7 +96,7 @@ async function changeCodexApprovalMode(mode) {
     codexApprovalModes[key] = mode;
     try { localStorage.setItem(CODEX_APPROVAL_MODES_KEY, JSON.stringify(codexApprovalModes)); }
     catch { showToast('حالت اعمال شد، اما ذخیرهٔ تنظیمات مرورگر ناموفق بود.'); }
-    showToast(mode === 'auto-accept' ? 'خواندن خودکار شد؛ تغییرات هنوز اجازه می‌خواهند.' : mode === 'auto-decline' ? 'رد خودکار فعال شد.' : 'برای هر درخواست اجازه می‌پرسد.');
+    showToast('حالت انتخاب‌شده از پیام بعدی اعمال می‌شود؛ اجرای جاری با دسترسی قبلی ادامه دارد.');
   } catch (error) {
     showToast(error.message);
   } finally {
@@ -211,8 +230,15 @@ async function refreshCodexThread(chatId) {
       if (sendingChatIds.has(chatId) && !chat.stopRequested) pausedQueues.add(chatId);
     }
     if (data.usage?.total) {
+      chat.usageAvailable = true;
       chat.usageSummary.total_input_tokens = data.usage.total.inputTokens || 0;
       chat.usageSummary.total_output_tokens = data.usage.total.outputTokens || 0;
+      chat.usageSummary.cache_read_input_tokens = data.usage.total.cachedInputTokens || 0;
+      chat.usageSummary.cache_creation_input_tokens = data.usage.total.cacheWriteInputTokens || 0;
+      chat.usageSummary.request_count = data.usage.requestCount ?? null;
+      chat.usageSummary.last_usage = data.usage.last ? { input_tokens: data.usage.last.inputTokens || 0, output_tokens: data.usage.last.outputTokens || 0 } : null;
+    } else {
+      chat.usageAvailable = false;
     }
     if (!data.running && !chat.submitting && sendingChatIds.has(chatId) && chatId !== activeChatId) chat.unreadReply = true;
     if (data.running) sendingChatIds.add(chatId);

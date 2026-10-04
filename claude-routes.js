@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { ClaudeClient } from './claude-client.js';
+import { summarizeClaudeUsage } from './session-usage.js';
 import { approvalModes as validApprovalModes, isReadOnlyTool } from './approval-policy.js';
 import { resolveChatWorkspace, isGeneralChat } from './chat-workspace.js';
 
@@ -29,7 +30,7 @@ export function installClaudeRoutes(app, { client = new ClaudeClient(), attachme
   stateFile = path.resolve('.claude-ui-state.json') } = {}) {
   const router = express.Router(), states = new Map(), drafts = new Map(), approvalModes = new Map();
   const automaticToolResult = (name, input, mode) => {
-    if (name === 'AskUserQuestion') return null;
+    if (['AskUserQuestion', 'ExitPlanMode'].includes(name)) return null;
     if (mode === 'auto-decline') return { behavior: 'deny', message: 'اجازهٔ خودکار رد شد.' };
     if (mode === 'auto-accept' && isReadOnlyTool(name, input)) return { behavior: 'allow', updatedInput: input };
     return null;
@@ -88,7 +89,27 @@ export function installClaudeRoutes(app, { client = new ClaudeClient(), attachme
     const data = presentClaudeMessages([...merged.values()]);
     if (state?.partial) data.messages.push({ id: 'streaming', role: 'assistant', content: state.partial });
     res.json({ ...summary(info), ...data, running: Boolean(state?.running), error: state?.error,
-      model: state?.model, usage: state?.usage, requests: [...(state?.requests?.values() || [])].map(r => r.public) });
+      model: state?.model, usage: summarizeClaudeUsage([...records, ...(state?.records || [])]), requests: [...(state?.requests?.values() || [])].map(r => r.public) });
+  }));
+  router.post('/threads/:id/fork', handle(async (req, res) => {
+    const info = await getInfo(req.params.id);
+    if (states.get(req.params.id)?.running) return res.status(409).json({ error: 'برای کپی گفتگو ابتدا صبر کن اجرای فعلی تمام شود.' });
+    const title = typeof req.body.title === 'string' ? req.body.title.trim() : '';
+    if (!title || title.length > 120 || /[\r\n\x00-\x1f]/.test(title)) throw new Error('عنوان کپی باید بین ۱ تا ۱۲۰ نویسه و در یک خط باشد.');
+    if (drafts.has(req.params.id)) {
+      const copy = { ...info, sessionId: crypto.randomUUID(), customTitle: title, lastModified: Date.now() };
+      drafts.set(copy.sessionId, copy); return res.json({ thread: summary(copy) });
+    }
+    const { sessionId } = await client.fork(req.params.id, info.cwd, title);
+    res.json({ thread: summary({ ...info, sessionId, customTitle: title, createdAt: Date.now(), lastModified: Date.now() }) });
+  }));
+  router.post('/threads/:id/title', handle(async (req, res) => {
+    const info = await getInfo(req.params.id);
+    const title = typeof req.body.title === 'string' ? req.body.title.trim() : '';
+    if (!title || title.length > 120 || /[\r\n\x00-\x1f]/.test(title)) throw new Error('عنوان باید بین ۱ تا ۱۲۰ نویسه و در یک خط باشد.');
+    if (drafts.has(req.params.id)) info.customTitle = title;
+    else await client.rename(req.params.id, title, info.cwd);
+    res.json({ title });
   }));
   router.get('/threads/:id/approval-mode', handle(async (req, res) => {
     res.json({ mode: approvalModes.get(req.params.id) || 'ask' });
@@ -96,6 +117,8 @@ export function installClaudeRoutes(app, { client = new ClaudeClient(), attachme
   router.post('/threads/:id/approval-mode', handle(async (req, res) => {
     if (!validApprovalModes.has(req.body.mode)) throw new Error('حالت اجازه نامعتبر است.');
     approvalModes.set(req.params.id, req.body.mode);
+    // Native policy is captured at turn start. Do not grant an old pending
+    // request merely because the user selected a mode for the next turn.
     for (const request of states.get(req.params.id)?.requests.values() || []) {
       const result = automaticToolResult(request.name, request.input, req.body.mode);
       if (result) request.done(result);
@@ -121,9 +144,7 @@ export function installClaudeRoutes(app, { client = new ClaudeClient(), attachme
       const content = [{ type: 'text', text: promptText }, ...await attachmentInput(ids)];
       const record = { type: 'user', uuid: crypto.randomUUID(), session_id: id, parent_tool_use_id: null, message: { role: 'user', content } };
       const prompt = (async function* () { yield record; })();
-      const query = await client.query(prompt, { cwd: info.cwd, ...(drafts.has(id) ? { sessionId: id } : { resume: id }),
-        ...(model ? { model } : {}), includePartialMessages: true, abortController: state.controller,
-        canUseTool: (name, input, options) => new Promise(resolve => {
+      const requestTool = (name, input, options) => new Promise(resolve => {
           const requestId = crypto.randomUUID();
           const questions = name === 'AskUserQuestion' && Array.isArray(input.questions) ? input.questions.map(q => ({ id: q.question, question: q.question, options: q.options })) : [];
           const done = result => { options.signal.removeEventListener('abort', abort); state.requests.delete(requestId); resolve(result); };
@@ -136,7 +157,25 @@ export function installClaudeRoutes(app, { client = new ClaudeClient(), attachme
           state.requests.set(requestId, { name, input, done, public: { id: requestId,
             method: questions.length ? 'item/tool/requestUserInput' : 'claude/tool/approval',
             reason: name, command: JSON.stringify(input, null, 2), cwd: info.cwd, questions } });
-        }) });
+        });
+      const selectedMode = approvalModes.get(id) || 'ask';
+      const permissionMode = ['default', 'acceptEdits', 'auto', 'plan', 'bypassPermissions'].includes(selectedMode) ? selectedMode : 'default';
+      const query = await client.query(prompt, { cwd: info.cwd, ...(drafts.has(id) ? { sessionId: id } : { resume: id }),
+        permissionMode,
+        ...(drafts.has(id) && info.customTitle ? { title: info.customTitle } : {}),
+        ...(permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
+        ...(model ? { model } : {}), includePartialMessages: true, abortController: state.controller,
+        canUseTool: requestTool,
+        // Interaction must run before native auto/bypass permission resolution.
+        hooks: { PreToolUse: [{ matcher: 'AskUserQuestion|ExitPlanMode', timeout: 3600, hooks: [
+          async (input, _toolUseId, { signal }) => {
+            const result = await requestTool(input.tool_name, input.tool_input, { signal });
+            return { hookSpecificOutput: { hookEventName: 'PreToolUse',
+              permissionDecision: result.behavior === 'allow' ? 'allow' : 'deny',
+              ...(result.behavior === 'allow' ? { updatedInput: result.updatedInput } : { permissionDecisionReason: result.message }) } };
+          }
+        ] }] }
+      });
       state.query = query; state.records.push(record);
       res.json({ started: true });
       void (async () => {
@@ -146,7 +185,6 @@ export function installClaudeRoutes(app, { client = new ClaudeClient(), attachme
             if (message.type === 'stream_event' && message.event?.type === 'content_block_delta' && message.event.delta?.type === 'text_delta') state.partial += message.event.delta.text;
             if (message.type === 'assistant') { state.records.push(message); state.partial = ''; }
             if (message.type === 'result') {
-              state.usage = { total: { inputTokens: (message.usage?.input_tokens || 0) + (message.usage?.cache_read_input_tokens || 0) + (message.usage?.cache_creation_input_tokens || 0), outputTokens: message.usage?.output_tokens || 0 } };
               if (message.is_error) state.error = (message.errors || ['اجرای Claude ناموفق بود.']).join('\n');
             }
           }

@@ -2,7 +2,8 @@ import express from 'express';
 import path from 'node:path';
 import { resolveChatWorkspace, isGeneralChat } from './chat-workspace.js';
 import { CodexClient } from './codex-client.js';
-import { approvalModes as validApprovalModes, isReadOnlyCommandRequest, isReadOnlyPermissionRequest } from './approval-policy.js';
+import { createCodexUsageReader } from './session-usage.js';
+import { codexApprovalModes as validApprovalModes, isReadOnlyCommandRequest, isReadOnlyPermissionRequest } from './approval-policy.js';
 export { isReadOnlyCommand, isReadOnlyPermissionRequest } from './approval-policy.js';
 
 export function summarizeThread(thread) {
@@ -44,12 +45,13 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
   const live = new Map();
   const errors = new Map();
   const usage = new Map();
+  const readUsage = createCodexUsageReader();
   const archived = new Set();
   const freshThreads = new Map();
   const approvalModes = new Map();
   const approvalActivity = new Map();
   const approvalResponse = (request, mode) => {
-    if (mode === 'ask' || !validApprovalModes.has(mode) || request.method === 'item/tool/requestUserInput') return null;
+    if (!['auto-accept', 'auto-decline'].includes(mode) || request.method === 'item/tool/requestUserInput') return null;
     const accept = mode === 'auto-accept';
     if (accept && !(
       request.method === 'item/commandExecution/requestApproval' && isReadOnlyCommandRequest(request)
@@ -164,6 +166,29 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
     freshThreads.set(thread.id, thread);
     res.json({ thread: summarizeThread(thread) });
   }));
+  router.post('/threads/:id/fork', handle(async (req, res) => {
+    const id = req.params.id;
+    if (running.has(id) || starting.has(id)) return res.status(409).json({ error: 'برای کپی گفتگو ابتدا صبر کن اجرای فعلی تمام شود.' });
+    const title = typeof req.body.title === 'string' ? req.body.title.trim() : '';
+    if (!title || title.length > 120 || /[\r\n\x00-\x1f]/.test(title)) throw new Error('عنوان کپی باید بین ۱ تا ۱۲۰ نویسه و در یک خط باشد.');
+    const { thread: original } = await client.request('thread/read', { threadId: id, includeTurns: false });
+    if (original.status?.type === 'active') return res.status(409).json({ error: 'این سشن هنوز در حال اجراست.' });
+    const model = req.body.model;
+    if (model && (typeof model !== 'string' || model.length > 200)) throw new Error('مدل نامعتبر است.');
+    const { thread } = await client.request('thread/fork', { threadId: id, cwd: original.cwd, deferGoalContinuation: true, ...(model ? { model } : {}) });
+    freshThreads.set(thread.id, thread);
+    let warning;
+    try { await client.request('thread/name/set', { threadId: thread.id, name: title }); thread.name = title; }
+    catch { warning = 'کپی ساخته شد، اما تغییر عنوان انجام نشد؛ با دکمهٔ مداد دوباره تلاش کن.'; }
+    res.json({ thread: summarizeThread(thread), warning });
+  }));
+  router.post('/threads/:id/title', handle(async (req, res) => {
+    const title = typeof req.body.title === 'string' ? req.body.title.trim() : '';
+    if (!title || title.length > 120 || /[\r\n\x00-\x1f]/.test(title)) throw new Error('عنوان باید بین ۱ تا ۱۲۰ نویسه و در یک خط باشد.');
+    await client.request('thread/name/set', { threadId: req.params.id, name: title });
+    if (freshThreads.has(req.params.id)) freshThreads.get(req.params.id).name = title;
+    res.json({ title });
+  }));
   router.get('/threads/:id', handle(async (req, res) => {
     let thread;
     try {
@@ -190,8 +215,12 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
     }));
     const presented = presentItems(turns);
     presented.activity = [...presented.activity, ...(approvalActivity.get(thread.id) || [])].slice(-40);
+    const historicalUsage = await readUsage(thread.path), liveUsage = usage.get(thread.id);
+    const tokenTotal = value => value?.total?.totalTokens ?? ((value?.total?.inputTokens || 0) + (value?.total?.outputTokens || 0));
+    const recordedUsage = liveUsage && (!historicalUsage || tokenTotal(liveUsage) > tokenTotal(historicalUsage)) ? liveUsage : historicalUsage || liveUsage || null;
     res.json({ ...summarizeThread(thread), ...presented, running: running.has(thread.id),
-      turnId: running.get(thread.id), requests, error: errors.get(thread.id) || null, usage: usage.get(thread.id) || null });
+      turnId: running.get(thread.id), requests, error: errors.get(thread.id) || null,
+      usage: recordedUsage });
   }));
   router.post('/threads/:id/turns', handle(async (req, res) => {
     const id = req.params.id;
@@ -208,8 +237,8 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
     starting.add(id);
     try {
       const extra = await attachmentInput(ids);
-      // Resume the original thread and inherit its cwd, model, instructions and permissions.
-      // Never disable approvals or elevate its sandbox to make the integration work.
+      // Resume the original thread and its project. Only an explicitly selected
+      // UI mode changes the next turn's sandbox; never bypass system approvals.
       if (archived.has(id)) {
         await client.request('thread/unarchive', { threadId: id });
         archived.delete(id);
@@ -226,11 +255,21 @@ export function installCodexRoutes(app, { client = new CodexClient(), attachment
       const input = [...(promptText ? [{ type: 'text', text: promptText }] : []), ...extra];
       const model = req.body.model;
       if (model && (typeof model !== 'string' || model.length > 200)) throw new Error('مدل نامعتبر است.');
-      // Ask Codex to surface untrusted command/file operations. The local
-      // request handler then applies the selected UI mode; without this
-      // per-turn policy, trusted workspaces can bypass the manual prompt.
-      const approvalPolicy = approvalModes.has(id) ? 'on-request' : undefined;
-      const sandboxPolicy = approvalModes.has(id) ? { type: 'readOnly', networkAccess: false } : undefined;
+      const mode = approvalModes.get(id);
+      const approvalPolicy = ['acceptEdits', 'bypassPermissions'].includes(mode) ? 'never' : mode ? 'on-request' : undefined;
+      let sandboxPolicy;
+      if (mode === 'bypassPermissions') {
+        sandboxPolicy = { type: 'dangerFullAccess' };
+      } else if (['workspace-auto', 'default', 'acceptEdits'].includes(mode)) {
+        if (typeof thread.cwd !== 'string' || !path.isAbsolute(thread.cwd)) {
+          throw new Error('مسیر معتبر پروژه برای حالت خودکار مشخص نیست.');
+        }
+        // Native sandbox enforcement handles ordinary project writes. Requests
+        // which still cross a boundary stay manual; do not auto-accept escapes.
+        sandboxPolicy = { type: 'workspaceWrite', writableRoots: [path.resolve(thread.cwd)], networkAccess: false };
+      } else if (mode) {
+        sandboxPolicy = { type: 'readOnly', networkAccess: false };
+      }
       const { turn } = await client.request('turn/start', {
         threadId: id, input,
         ...(approvalPolicy ? { approvalPolicy, sandboxPolicy } : {}),

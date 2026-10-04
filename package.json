@@ -13,7 +13,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test approval-policy.test.js codex.test.js claude.test.js voice.test.cjs",
+    "test": "node --test approval-policy.test.js codex.test.js claude.test.js voice.test.cjs transcript.test.cjs session-usage.test.js",
     "test:codex": "node codex-smoke.js",
     "test:browser": "node --experimental-websocket codex-browser-smoke.js"
   },

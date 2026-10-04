@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const fs = require('node:fs');
 
-function harness() {
+function harness(storage = {}) {
   const clips = new Map();
   const elements = new Map();
   const element = () => ({ value: '', dataset: {}, listeners: {}, classList: { toggle() {}, add() {}, remove() {} },
@@ -48,7 +48,7 @@ function harness() {
     navigator: { mediaDevices: { getUserMedia: async () => ({ getTracks: () => [{ stop() { stopped = true; } }] }) } },
     document: { getElementById(id) { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); },
       createElement: element, createDocumentFragment: element },
-    localStorage: { getItem: () => null, setItem() {} },
+    localStorage: { getItem: key => storage[key] ?? null, setItem(key, value) { storage[key] = value; } },
     fetch: async () => { throw new Error('unexpected network call'); },
   });
   vm.runInContext(fs.readFileSync('voice.js', 'utf8'), ctx);
@@ -241,4 +241,95 @@ test('failed mode selection rolls the dropdown back and displays an error', asyn
   assert.equal(h.elements.get('codexApprovalMode').value, 'auto-accept');
   assert.match(h.elements.get('codexApprovalMode').title, /mode rejected/);
   assert.equal(h.elements.get('codexApprovalMode').disabled, false);
+});
+
+test('workspace automation persists across reload and is carried with the next Codex turn', async () => {
+  const saved = {};
+  const h = harness(saved); await h.run('voiceReady'); approvalChat(h);
+  let serverMode = 'ask';
+  h.ctx.projectApi = async (_chat, _url, body) => {
+    if (body) serverMode = body.mode;
+    return { mode: serverMode };
+  };
+  await h.run("changeCodexApprovalMode('workspace-auto')");
+  assert.equal(JSON.parse(saved['persian-approval-modes-v2'])['codex:test'], 'workspace-auto');
+
+  const reloaded = harness(saved); await reloaded.run('voiceReady');
+  reloaded.run("codexChats.push({ ...normalizeChat({id: 'project_test', title: 'Test'}), source: 'codex', threadId: 'test', cwd: 'D:/project' }); activeChatId = 'project_test'; refreshCodexThread = async () => {};");
+  assert.equal(reloaded.run('desiredApprovalMode(getActiveChat())'), 'workspace-auto');
+  let turn;
+  reloaded.ctx.projectApi = async (_chat, url, body) => {
+    if (url.endsWith('/approval-mode')) return { mode: 'workspace-auto' };
+    turn = body; return {};
+  };
+  await reloaded.run("sendCodexMessage({chatId: activeChatId, typedText: 'edit', attachments: []})");
+  assert.equal(turn.approvalMode, 'workspace-auto');
+});
+
+test('Claude does not expose the Codex-only workspace automation mode', async () => {
+  const h = harness(); await h.run('voiceReady'); approvalChat(h, 'claude');
+  let calls = 0;
+  h.ctx.projectApi = async () => { calls++; return {}; };
+  h.run('syncCodexApprovalMode()');
+  assert.equal(h.elements.get('workspaceApprovalOption').hidden, true);
+  await h.run("changeCodexApprovalMode('workspace-auto')");
+  assert.equal(calls, 0);
+  assert.equal(h.run("codexApprovalModes['claude:test']"), 'auto-accept');
+});
+
+test('native permission choices are provider-specific, persist and leave legacy access unchanged', async () => {
+  const saved = { 'persian-approval-modes-v2': JSON.stringify({ 'codex:test': 'auto-accept' }) };
+  const h = harness(saved); await h.run('voiceReady'); approvalChat(h);
+  assert.equal(h.run('desiredApprovalMode(getActiveChat())'), 'auto-accept');
+  assert.equal(h.run("availableApprovalModes(getActiveChat()).includes('plan')"), false);
+  let serverMode = 'ask';
+  h.ctx.projectApi = async (_chat, _url, body) => { if (body) serverMode = body.mode; return { mode: serverMode }; };
+  await h.run("changeCodexApprovalMode('acceptEdits')");
+  assert.equal(JSON.parse(saved['persian-approval-modes-v2'])['codex:test'], 'acceptEdits');
+  const reloaded = harness(saved); await reloaded.run('voiceReady'); reloaded.run("codexChats.push({ ...normalizeChat({id: 'project_test', title: 'Test'}), source: 'codex', threadId: 'test' }); activeChatId = 'project_test';");
+  assert.equal(reloaded.run('desiredApprovalMode(getActiveChat())'), 'acceptEdits');
+  reloaded.run("getActiveChat().source = 'claude'");
+  assert.equal(reloaded.run("availableApprovalModes(getActiveChat()).includes('auto')"), true);
+});
+
+test('custom local titles survive normalization and automatic first-message naming', async () => {
+  const h = harness(); await h.run('voiceReady');
+  h.run("getActiveChat().title = 'Chosen title'; getActiveChat().customTitle = true; getActiveChat().messages = [{role:'user',content:'First message'}]; updateTitleFromFirstMessage(getActiveChat()); saveChatStore();");
+  assert.equal(h.run('getActiveChat().title'), 'Chosen title');
+  assert.equal(h.run('normalizeChat(getActiveChat()).customTitle'), true);
+});
+
+test('local fork copies history independently and does not copy queued work', async () => {
+  const h = harness(); h.ctx.structuredClone = structuredClone; await h.run('voiceReady');
+  h.run("getActiveChat().messages = [{id:'original-message',role:'user',content:'History'}]; setupForkChat(); switchChat = id => { activeChatId = id; };");
+  const dialog = h.elements.get('forkChatDialog'); dialog.showModal = dialog.close = () => {};
+  const originalId = h.run('activeChatId');
+  h.elements.get('forkChatBtn').onclick();
+  h.elements.get('forkChatName').value = 'Copy';
+  await h.elements.get('forkChatForm').onsubmit({ preventDefault() {} });
+  assert.notEqual(h.run('activeChatId'), originalId);
+  assert.equal(h.run('getActiveChat().messages[0].content'), 'History');
+  assert.notEqual(h.run('getActiveChat().messages[0].id'), 'original-message');
+  h.run("getActiveChat().messages[0].content = 'Changed'");
+  assert.equal(h.run("chatStore.chats.find(c => c.id !== activeChatId).messages[0].content"), 'History');
+  assert.equal(h.run('messageQueues.has(activeChatId)'), false);
+});
+test('project fork opens returned session with selected model and retains original on failure', async () => {
+  const h = harness(); await h.run('voiceReady'); approvalChat(h, 'claude');
+  h.run("setupForkChat(); switchChat = id => { activeChatId = id; };");
+  const dialog = h.elements.get('forkChatDialog'); dialog.showModal = dialog.close = () => {};
+  const originalId = h.run('activeChatId');
+  h.elements.get('forkChatBtn').onclick(); h.elements.get('forkChatName').value = 'Branch';
+  h.elements.get('forkChatModel').value = 'another-model';
+  h.ctx.projectApi = async () => { throw Error('offline'); };
+  await h.elements.get('forkChatForm').onsubmit({ preventDefault() {} });
+  assert.equal(h.run('activeChatId'), originalId);
+  assert.match(h.elements.get('forkChatError').textContent, /offline/);
+  let sent;
+  h.ctx.projectApi = async (_chat, url, body) => { sent = {url, body}; return {thread:{id:'new-branch',title:'Branch',cwd:'project'}}; };
+  await h.elements.get('forkChatForm').onsubmit({ preventDefault() {} });
+  assert.ok(sent.url.endsWith('/fork')); assert.equal(sent.body.model, 'another-model');
+  assert.equal(h.run('getActiveChat().threadId'), 'new-branch');
+  assert.equal(h.run('getActiveChat().model'), 'another-model');
+  assert.equal(h.run("codexChats.find(c => c.threadId === 'test').id"), originalId);
 });

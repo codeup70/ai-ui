@@ -70,6 +70,8 @@ export class ClaudeClient {
   info(id) { return this.sdk.getSessionInfo(id); }
   messages(id, cwd) { return this.sdk.getSessionMessages(id, { dir: cwd }); }
   delete(id, cwd) { return this.sdk.deleteSession(id, { dir: cwd }); }
+  rename(id, title, cwd) { return this.sdk.renameSession(id, title, { dir: cwd }); }
+  fork(id, cwd, title) { return this.sdk.forkSession(id, { dir: cwd, title }); }
   async query(prompt, options) { return this.sdk.query({ prompt, options: { ...await this.options(), ...options } }); }
   close() { for (const query of this.probes) query.close(); }
 }

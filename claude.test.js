@@ -15,6 +15,8 @@ async function harness(t) {
     messages: async () => [{ type: 'user', uuid: 'old', message: { content: 'previous' } }],
     models: async () => [{ value: 'sonnet', displayName: 'Sonnet' }], close() {},
     delete: async (...args) => client.calls.push(['delete', ...args]),
+    rename: async (key, title, cwd) => { client.calls.push(['rename', key, title, cwd]); info.customTitle = title; },
+    fork: async (...args) => { client.calls.push(['fork', ...args]); return { sessionId: '22345678-1234-1234-1234-123456789abc' }; },
     query: async (prompt, options) => {
       client.calls.push(['query', options]); client.options = options;
       const iterator = (async function* () {
@@ -33,7 +35,7 @@ async function harness(t) {
   t.after(async () => { bridge.close(); await new Promise(resolve => server.close(resolve)); await fs.rm(dir, { recursive: true, force: true }); });
   const request = async (url, body, headers = {}) => {
     const response = await fetch(`http://127.0.0.1:${server.address().port}/api/claude${url}`,
-      { method: body === undefined ? 'GET' : 'POST', headers: { 'Content-Type': 'application/json', ...headers }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+      { method: body === undefined ? 'GET' : 'POST', headers: { 'Content-Type': 'application/json', Connection: 'close', ...headers }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     return { status: response.status, data: await response.json().catch(() => null) };
   };
   return { client, request, dir };
@@ -134,4 +136,78 @@ test('changing Claude mode releases an already pending read without approving an
   assert.equal((await request('/threads/' + id)).data.requests.length, 1);
   await request('/threads/' + id + '/interrupt', {});
   assert.equal((await edit).behavior, 'deny');
+});
+
+for (const mode of ['default', 'acceptEdits', 'auto', 'plan', 'bypassPermissions']) {
+  test('Claude native mode is passed on start/resume and questions stay interactive: ' + mode, async t => {
+    for (const fresh of [false, true]) {
+      const { client, request, dir } = await harness(t);
+      const threadId = fresh ? (await request('/threads', { cwd: dir })).data.thread.id : id;
+      assert.equal((await request('/threads/' + threadId + '/turns', { text: 'test', approvalMode: mode })).status, 200);
+      await settle();
+      assert.equal(client.options.permissionMode, mode);
+      assert.equal(client.options.allowDangerouslySkipPermissions, mode === 'bypassPermissions' ? true : undefined);
+      assert.equal(client.options[fresh ? 'sessionId' : 'resume'], threadId);
+      const hook = client.options.hooks.PreToolUse[0].hooks[0];
+      const pending = hook({ tool_name: 'AskUserQuestion', tool_input: { questions: [{ question: 'Which?' }] } }, 'tool-id', { signal: client.options.abortController.signal });
+      const history = (await request('/threads/' + threadId)).data;
+      assert.equal(history.requests[0].questions[0].question, 'Which?');
+      await request('/threads/' + threadId + '/requests/' + history.requests[0].id, { answers: { 'Which?': 'A' } });
+      const result = await pending;
+      assert.equal(result.hookSpecificOutput.permissionDecision, 'allow');
+      assert.equal(result.hookSpecificOutput.updatedInput.answers['Which?'], 'A');
+      await request('/threads/' + threadId + '/approval-mode', { mode: 'default' });
+      assert.equal(client.options.permissionMode, mode, 'selection applies to next turn');
+    }
+  });
+}
+
+test('Claude rename persists through SDK and draft title is passed to first turn', async t => {
+  const { request, client, dir } = await harness(t);
+  assert.equal((await request('/threads/' + id + '/title', { title: '  Renamed  ' })).status, 200);
+  assert.deepEqual(client.calls[0], ['rename', id, 'Renamed', dir]);
+  assert.equal((await request('/threads/' + id)).data.title, 'Renamed');
+  assert.equal((await request('/threads/' + id + '/title', { title: '' })).status, 400);
+  const draft = (await request('/threads', { cwd: dir })).data.thread;
+  await request('/threads/' + draft.id + '/title', { title: 'Draft title' });
+  assert.equal((await request('/threads/' + draft.id)).data.title, 'Draft title');
+  await request('/threads/' + draft.id + '/turns', { text: 'hello' });
+  assert.equal(client.options.title, 'Draft title');
+});
+
+test('Claude fork uses SDK full-history copy with original cwd and rejects running sessions', async t => {
+  const { request, client, dir } = await harness(t);
+  const result = await request('/threads/' + id + '/fork', { title: 'Branch' });
+  assert.equal(result.status, 200);
+  assert.notEqual(result.data.thread.id, id);
+  assert.equal(result.data.thread.title, 'Branch');
+  assert.deepEqual(client.calls[0], ['fork', id, dir, 'Branch']);
+  assert.equal(client.calls.length, 1);
+  assert.equal((await request('/threads/' + id + '/fork', { title: '' })).status, 400);
+  await request('/threads/' + id + '/turns', { text: 'busy' });
+  assert.equal((await request('/threads/' + id + '/fork', { title: 'Busy' })).status, 409);
+});
+test('Claude draft fork has an independent ID and leaves original draft intact', async t => {
+  const { request, client, dir } = await harness(t);
+  const source = (await request('/threads', { cwd: dir })).data.thread;
+  const copy = (await request('/threads/' + source.id + '/fork', { title: 'Draft copy' })).data.thread;
+  assert.notEqual(source.id, copy.id);
+  assert.equal((await request('/threads/' + copy.id)).data.title, 'Draft copy');
+  assert.equal((await request('/threads/' + source.id)).data.title, source.title);
+  assert.equal(client.calls.length, 0);
+});
+
+test('Claude historical usage is available when idle and repeated polls do not accumulate it', async t => {
+  const { request, client } = await harness(t);
+  client.messages = async () => [
+    { type: 'assistant', uuid: 'a', message: { id: 'api-a', content: 'one', usage: { input_tokens: 10, cache_read_input_tokens: 20, output_tokens: 4 } } },
+    { type: 'assistant', uuid: 'b', message: { id: 'api-b', content: 'two', usage: { input_tokens: 12, output_tokens: 6 } } },
+  ];
+  for (let i = 0; i < 2; i++) {
+    const data = (await request('/threads/' + id)).data;
+    assert.equal(data.running, false);
+    assert.equal(data.usage.total.totalTokens, 52);
+    assert.equal(data.usage.requestCount, 2);
+  }
+  assert.equal(client.calls.length, 0);
 });

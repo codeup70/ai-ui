@@ -39,7 +39,10 @@
         <div class="chat-toolbar-actions">
           <button id="showConsoleBtn" class="ghost" type="button" aria-haspopup="dialog" aria-controls="consoleDialog">وضعیت و مصرف</button>
           <button id="showOutputBtn" class="ghost" type="button" aria-haspopup="dialog" aria-controls="outputDialog">خروجی</button>
+          <button id="searchMessagesBtn" class="ghost transcript-toolbar-button" type="button" aria-label="جست‌وجوی پیام‌ها" title="جست‌وجوی پیام‌ها" aria-haspopup="dialog" aria-controls="messageSearchDialog"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg><span>جست‌وجو</span></button>
+          <button id="exportChatBtn" class="ghost transcript-toolbar-button" type="button" aria-label="دانلود گفتگو" title="دانلود گفتگو" aria-haspopup="dialog" aria-controls="exportChatDialog"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"/></svg><span>دانلود</span></button>
           <button id="projectContextBtn" class="ghost" type="button">context پروژه</button>
+          <button id="forkChatBtn" class="ghost" type="button" aria-haspopup="dialog" aria-controls="forkChatDialog">کپی و ادامه</button>
           <button id="archiveChatBtn" class="ghost" type="button" hidden>آرشیو گفتگو</button>
           <button id="clearBtn" class="ghost" type="button">پاک کردن پیام‌های این گفتگو</button>
         </div>
@@ -48,6 +51,7 @@
       <div id="chatLog" class="chat-log" aria-live="polite"></div>
 
       <form id="chatForm" class="composer">
+        <div id="composerResize" class="composer-resize" role="separator" tabindex="0" aria-orientation="horizontal" aria-controls="messageInput" aria-label="تغییر ارتفاع کادر پیام" aria-valuemin="40" aria-valuemax="480" aria-valuenow="40" title="برای تغییر ارتفاع بکش؛ کلیدهای بالا و پایین هم کار می‌کنند. دوبار کلیک: اندازهٔ اولیه"></div>
         <div id="messageQueue" class="message-queue" aria-live="polite"></div>
         <div id="codexRequests" class="codex-requests"></div>
         <div id="voiceTray" class="voice-tray" aria-live="polite"></div>
@@ -64,7 +68,7 @@
         <div class="composer-footer">
           <div class="composer-tools">
             <label id="claudeModelLabel" class="model-picker" hidden><span id="modelProviderName">مدل</span><select id="claudeModel" aria-label="مدل گفتگو"><option value="">پیش‌فرض گفتگو</option></select></label>
-            <label id="codexApprovalLabel" class="model-picker approval-picker" hidden><span>دسترسی</span><select id="codexApprovalMode" aria-label="حالت اجازه"><option value="ask">دستی</option><option value="auto-accept">خودکار؛ خواندن آزاد</option><option value="auto-decline">رد خودکار</option></select></label>
+            <label id="codexApprovalLabel" class="model-picker approval-picker" hidden><span title="تغییر از پیام بعدی اعمال می‌شود">دسترسی · پیام بعدی</span><select id="codexApprovalMode" aria-label="حالت اجازه — از پیام بعدی"><option value="default">پیش‌فرض · Default</option><option value="acceptEdits">ویرایش خودکار · Accept Edits</option><option value="auto">خودکار هوشمند · Auto (Claude)</option><option value="plan">فقط برنامه‌ریزی · Plan (Claude)</option><option value="bypassPermissions">دسترسی کامل بدون تأیید · Full Access</option><option value="ask">دستی (قدیمی)</option><option value="auto-accept">خواندن آزاد (قدیمی)</option><option id="workspaceApprovalOption" value="workspace-auto">داخل پروژه با تأیید مرز (قدیمی)</option><option value="auto-decline">رد خودکار (قدیمی)</option></select></label>
             <label id="webSearchLabel" class="model-picker web-search-picker"><input id="webSearchToggle" type="checkbox" /><span>جست‌وجوی وب</span></label>
             <input id="fileInput" class="sr-only" type="file" multiple accept="image/png,image/jpeg,image/webp,application/pdf,text/plain,.txt,.md,.json,.csv,.js,.ts,.html,.css,.py,.xlsx,.xls" />
             <button id="attachBtn" class="icon-button" type="button">ضمیمه فایل</button>
@@ -84,6 +88,7 @@
         <div>
           <p class="eyebrow">Live Console</p>
           <h2 id="consoleTitle">وضعیت و مصرف</h2>
+          <p id="usageChatName" class="transcript-subtitle"></p>
         </div>
         <div class="chat-toolbar-actions">
           <button id="clearConsoleBtn" class="ghost" type="button">پاک کردن گزارش</button>
@@ -97,6 +102,39 @@
   </main>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <dialog id="forkChatDialog" class="console-card" aria-labelledby="forkChatTitle">
+    <form id="forkChatForm">
+      <div class="console-header"><div><h2 id="forkChatTitle">کپی و ادامه</h2><p class="transcript-subtitle">ادامهٔ همین تاریخچه در یک گفتگوی مستقل.</p></div><button id="closeForkChat" class="ghost transcript-close" type="button" aria-label="بستن">×</button></div>
+      <label for="forkChatName">عنوان گفتگوی جدید</label><input id="forkChatName" type="text" dir="auto" maxlength="120" required />
+      <label id="forkModelLabel" for="forkChatModel">مدل ادامهٔ گفتگو<select id="forkChatModel"></select></label>
+      <p class="transcript-export-note">تاریخچه کپی می‌شود؛ فایل‌های پروژه مشترک می‌مانند. انتخاب مدل در همان دستیار است، نه انتقال بین Claude و Codex. پیامی خودکار ارسال نمی‌شود.</p>
+      <p id="forkChatError" role="alert"></p><div class="rename-chat-footer"><button id="cancelForkChat" class="ghost" type="button">لغو</button><button id="createForkChat" type="submit">ساخت کپی</button></div>
+    </form>
+  </dialog>
+  <dialog id="renameChatDialog" class="console-card" aria-labelledby="renameChatTitle">
+    <form id="renameChatForm">
+      <div class="console-header"><div><h2 id="renameChatTitle">ویرایش عنوان</h2><p class="transcript-subtitle">یک نام مشخص برای این گفتگو انتخاب کن.</p></div><button id="closeRenameChat" class="ghost transcript-close" type="button" aria-label="بستن">×</button></div>
+      <label for="renameChatInput">عنوان گفتگو</label><input id="renameChatInput" type="text" dir="auto" maxlength="120" required autocomplete="off" />
+      <p id="renameChatError" role="alert"></p><div class="rename-chat-footer"><button id="cancelRenameChat" class="ghost" type="button">لغو</button><button id="saveRenameChat" type="submit">ذخیرهٔ عنوان</button></div>
+    </form>
+  </dialog>
+  <dialog id="messageSearchDialog" class="console-card" aria-labelledby="messageSearchTitle">
+    <div class="console-header"><div><h2 id="messageSearchTitle">جست‌وجوی پیام‌ها</h2><p class="transcript-subtitle">چیزی را در گفتگوهایت پیدا کن.</p></div><button id="closeMessageSearch" class="ghost transcript-close" type="button" aria-label="بستن جست‌وجو" title="بستن">×</button></div>
+    <form id="messageSearchForm" class="transcript-search-form">
+      <label class="sr-only" for="messageSearchQuery">عبارت جست‌وجو</label>
+      <div class="transcript-query-row"><input id="messageSearchQuery" type="search" placeholder="دنبال چه عبارتی می‌گردی؟" required autocomplete="off" /><button type="submit">جست‌وجو</button></div>
+      <div class="transcript-filters"><label class="transcript-scope" for="messageSearchScope"><span>جست‌وجو در</span><select id="messageSearchScope"><option value="current">همین گفتگو</option><option value="all">همهٔ گفتگوها</option></select></label>
+      <label class="transcript-archive"><input id="messageSearchArchived" type="checkbox" /> با آرشیوشده‌ها</label></div>
+    </form>
+    <p id="messageSearchStatus" role="status" aria-live="polite"></p><div id="messageSearchResults" class="transcript-search-results"></div>
+  </dialog>
+  <dialog id="exportChatDialog" class="console-card" aria-labelledby="exportChatTitle">
+    <div class="console-header"><div><h2 id="exportChatTitle">دانلود گفتگو</h2><p class="transcript-subtitle">یک نسخه از گفتگویت نگه دار.</p></div><button id="closeExportChat" class="ghost transcript-close" type="button" aria-label="بستن دانلود" title="بستن">×</button></div>
+    <div class="transcript-export-summary"><span>گفتگوی انتخاب‌شده</span><p id="exportChatName"></p></div>
+    <div class="transcript-format-field"><label for="exportChatFormat">فرمت خروجی</label><select id="exportChatFormat"><option value="html">HTML — خواندن در مرورگر</option><option value="markdown">Markdown — متن و کد</option><option value="json">JSON — دادهٔ ساختاریافته</option></select></div>
+    <p class="transcript-export-note">متن پیام‌ها و نام ضمیمه‌ها ذخیره می‌شود؛ فایل و صوت همراه آن نیست. اگر پاسخ هنوز در حال نوشتن است، برای نسخهٔ کامل صبر کن.</p>
+    <div class="transcript-export-footer"><p id="exportChatStatus" role="status" aria-live="polite"></p><button id="downloadChatBtn" type="button">دانلود فایل</button></div>
+  </dialog>
   <dialog id="outputDialog" class="console-card" aria-labelledby="outputTitle"><div class="console-header"><div><p class="eyebrow">Output</p><h2 id="outputTitle">خروجی آخر</h2></div><button id="closeOutputBtn" class="ghost" type="button">بستن</button></div><pre id="outputPreview" class="output-preview"></pre></dialog>
   <dialog id="projectContextDialog" class="console-card" aria-labelledby="projectContextTitle"><form id="projectContextForm"><h2 id="projectContextTitle">context پروژه</h2><p>راهنمای کوتاه این گفتگو را وارد کن؛ همراه پیام‌های بعدی برای مدل ارسال می‌شود.</p><textarea id="projectContextInput" rows="7" placeholder="مثلاً: این پروژه با Node.js و RTL نوشته شده است…"></textarea><button type="submit">ذخیره</button><button id="cancelProjectContextBtn" class="ghost" type="button">لغو</button></form></dialog>
   <dialog id="newClaudeDialog" class="console-card" aria-labelledby="newClaudeTitle">
